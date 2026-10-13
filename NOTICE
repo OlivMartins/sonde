@@ -1,0 +1,8 @@
+Sonde
+Copyright 2026 OlivMartins
+
+Ce produit est distribué sous licence Apache 2.0 (voir le fichier LICENSE).
+
+Les images Docker utilisées par docker-compose.yml (ClickHouse, OpenTelemetry Collector,
+Grafana, Python) ne sont pas redistribuées : elles sont téléchargées depuis leurs registres
+et restent soumises à leurs propres licences.

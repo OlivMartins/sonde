@@ -1,0 +1,44 @@
+# Construit l'archive de la stack, sa somme de contrôle et le tableau de bord autonome,
+# puis les joint à la release. Se déclenche à la publication d'une release,
+# ou à la main (onglet Actions > Release > Run workflow) pour compléter une release existante.
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag de la release à compléter (par exemple v0.1.0)
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  assets:
+    name: Construire et joindre les fichiers
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -q tests
+      - name: Construire l'archive
+        run: bash scripts/package.sh
+      - name: Joindre les fichiers à la release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$TAG" --clobber \
+            dist/sonde-*.tar.gz \
+            dist/sonde-*.tar.gz.sha256 \
+            dist/sonde-dashboard.json

@@ -1,0 +1,9 @@
+line-length = 120
+target-version = "py311"
+
+[lint]
+select = ["E", "W", "F", "I", "B", "UP", "BLE", "RUF"]
+ignore = ["E501"]  # line length is handled by `ruff format`
+
+[lint.isort]
+known-first-party = ["sonde_agent", "fake_llm", "clickhouse_support"]

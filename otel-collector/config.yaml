@@ -1,0 +1,71 @@
+# OpenTelemetry Collector (contrib 0.162.0)
+#
+#   agent ──OTLP──▶ memory_limiter ──▶ redaction ──▶ ClickHouse exporter
+#
+# The exporter does not create tables (create_schema: false): the schema is
+# owned by clickhouse/initdb/, as recommended for production deployments.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+  # Prompts, tool arguments and tool results are captured (opt-in) to debug
+  # agents. They routinely contain personal data and secrets, so values are
+  # masked here, before anything is stored. Masking happens in the pipeline,
+  # not in the application, so one policy covers every agent and team.
+  redaction/genai:
+    allow_all_keys: true
+    blocked_values:
+      # e-mail addresses
+      - '[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+'
+      # key=value secrets in logs and arguments (stops before JSON escapes)
+      - '(?i)(api[_-]?key|token|secret|password)=[^\s"\\,;]+'
+      # bearer tokens in captured HTTP headers
+      - '(?i)bearer [A-Za-z0-9._~+/-]+=*'
+    # Adds redaction.masked.count to each span: the dashboard tracks it.
+    summary: info
+
+exporters:
+  clickhouse:
+    endpoint: tcp://clickhouse:9000?dial_timeout=10s
+    database: otel
+    username: ${env:CLICKHOUSE_USER}
+    password: ${env:CLICKHOUSE_PASSWORD}
+    create_schema: false
+    traces_table_name: otel_traces
+    async_insert: true
+    compress: lz4
+    timeout: 10s
+    # Batching inside the exporter queue (replaces the standalone batch processor).
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 1000
+      batch:
+        flush_timeout: 2s
+        min_size: 2000
+    retry_on_failure:
+      enabled: true
+      initial_interval: 2s
+      max_interval: 30s
+      max_elapsed_time: 300s
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, redaction/genai]
+      exporters: [clickhouse]
+  telemetry:
+    logs:
+      level: info

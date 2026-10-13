@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sonde-agent"
+version = "0.1.0"
+description = "Demo SRE agent instrumented with OpenTelemetry GenAI semantic conventions"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+dependencies = [
+    "httpx==0.28.1",
+    "opentelemetry-sdk==1.45.1",
+    "opentelemetry-exporter-otlp-proto-http==1.45.1",
+    "opentelemetry-instrumentation-httpx==0.66b1",
+]
+
+[tool.setuptools]
+packages = ["sonde_agent"]

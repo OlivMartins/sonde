@@ -1,0 +1,98 @@
+name: sonde
+
+# Every port is bound to 127.0.0.1: nothing is exposed beyond this machine.
+
+x-clickhouse-credentials: &clickhouse-credentials
+  CLICKHOUSE_USER: ${CLICKHOUSE_USER:-sonde}
+  CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-sonde}
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.8
+    environment:
+      <<: *clickhouse-credentials
+      CLICKHOUSE_DB: otel
+    volumes:
+      - ./clickhouse/initdb:/docker-entrypoint-initdb.d:ro
+      - clickhouse-data:/var/lib/clickhouse
+    ports:
+      - "127.0.0.1:8123:8123"  # HTTP interface
+      - "127.0.0.1:9000:9000"  # native protocol
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    healthcheck:
+      # Healthy once the last init script has run (its view exists).
+      test: ["CMD-SHELL", "clickhouse-client -u \"$$CLICKHOUSE_USER\" --password \"$$CLICKHOUSE_PASSWORD\" -q 'EXISTS TABLE otel.genai_cost_1m' | grep -q 1"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.162.0
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    environment:
+      <<: *clickhouse-credentials
+    volumes:
+      - ./otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "127.0.0.1:4317:4317"  # OTLP gRPC
+      - "127.0.0.1:4318:4318"  # OTLP HTTP
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+
+  fake-llm:
+    build: ./fake-llm
+    environment:
+      FAKE_LLM_RATE_LIMIT_RATE: ${FAKE_LLM_RATE_LIMIT_RATE:-0.04}
+      FAKE_LLM_LATENCY_FACTOR: ${FAKE_LLM_LATENCY_FACTOR:-1.0}
+    ports:
+      - "127.0.0.1:8080:8080"  # OpenAI-compatible API + /admin/faults
+
+  agent:
+    build: ./agent
+    environment:
+      OTEL_SERVICE_NAME: sre-copilot
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: ${CAPTURE_MESSAGE_CONTENT:-true}
+      DEPLOYMENT_ENVIRONMENT: demo
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://fake-llm:8080/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_PROVIDER: ${LLM_PROVIDER:-fake-llm}
+      AGENT_V1_MODEL: ${AGENT_V1_MODEL:-sim-large}
+      AGENT_V2_MODEL: ${AGENT_V2_MODEL:-sim-mini}
+      AGENT_V2_TRAFFIC: ${AGENT_V2_TRAFFIC:-0.5}
+      LOADGEN_CONCURRENCY: ${LOADGEN_CONCURRENCY:-3}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # reach a local Ollama/vLLM on the host
+    depends_on:
+      otel-collector:
+        condition: service_started
+      fake-llm:
+        condition: service_healthy
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.2.4
+    environment:
+      <<: *clickhouse-credentials
+      GF_PLUGINS_PREINSTALL_SYNC: grafana-clickhouse-datasource@4.22.1
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      # Local demo convenience: browse without logging in.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Editor
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/sonde-agents.json
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+
+volumes:
+  clickhouse-data:
+  grafana-data:
