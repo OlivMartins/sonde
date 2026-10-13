@@ -96,13 +96,15 @@ def stat(
     decimals: int | None = None,
     description: str = "",
     thresholds: list | None = None,
+    w: int = 4,
+    h: int = 4,
 ) -> dict:
     p = panel(
         "stat",
         title,
         sql,
         FORMAT_TABLE,
-        (x, y, 4, 4),
+        (x, y, w, h),
         unit=unit,
         decimals=decimals,
         description=description,
@@ -240,60 +242,12 @@ GROUP BY time, agent
 ORDER BY time
 """,
         FORMAT_TIMESERIES,
-        (0, 6, 12, 8),
+        (0, 6, 8, 8),
         unit="currencyUSD",
         decimals=3,
         display_name="${__field.labels.agent}",
         custom=TIMESERIES_BARS,
         options=LEGEND,
-    ),
-    panel(
-        "table",
-        "Test A/B : qualité et coût par version",
-        f"""
-SELECT
-    r.AgentVersion AS version,
-    any(r.RequestModel) AS model,
-    count() AS runs,
-    countIf(r.Outcome = 'completed') / count() AS success,
-    countIf(r.Feedback = 1) / nullIf(countIf(r.Feedback != 0), 0) AS thumbs_up,
-    avg(r.Steps) AS avg_steps,
-    quantile(0.95)(r.DurationMs) / 1000 AS p95_s,
-    sum(c.CostUsd) / count() AS usd_per_run,
-    sum(c.CostUsd) / nullIf(countIf(r.Outcome = 'completed'), 0) AS usd_per_success
-FROM otel.genai_agent_runs AS r
-LEFT JOIN
-(
-    SELECT TraceId, sum(CostUsd) AS CostUsd
-    FROM otel.genai_llm_calls_priced
-    WHERE $__timeFilter(Timestamp)
-    GROUP BY TraceId
-) AS c ON r.TraceId = c.TraceId
-WHERE r.{MAIN} AND $__timeFilter(r.Timestamp)
-GROUP BY version
-ORDER BY version
-""",
-        FORMAT_TABLE,
-        (12, 6, 12, 8),
-        description=(
-            "La v2, moins chère, vaut-elle le coup ? Le coût par tâche réussie tranche. Le coût d'une exécution "
-            "inclut ses sous-agents, tant que le contexte de trace est propagé."
-        ),
-        options={"showHeader": True, "cellHeight": "sm"},
-        overrides=[
-            {
-                "matcher": {"id": "byRegexp", "options": "success|thumbs_up"},
-                "properties": [{"id": "unit", "value": "percentunit"}, {"id": "decimals", "value": 1}],
-            },
-            {
-                "matcher": {"id": "byRegexp", "options": "usd_per_.*"},
-                "properties": [{"id": "unit", "value": "currencyUSD"}, {"id": "decimals", "value": 4}],
-            },
-            {
-                "matcher": {"id": "byRegexp", "options": "avg_steps|p95_s"},
-                "properties": [{"id": "decimals", "value": 2}],
-            },
-        ],
     ),
     panel(
         "timeseries",
@@ -310,7 +264,7 @@ GROUP BY time
 ORDER BY time
 """,
         FORMAT_TIMESERIES,
-        (0, 14, 12, 8),
+        (8, 6, 8, 8),
         unit="short",
         custom=TIMESERIES_BARS,
         options=LEGEND,
@@ -329,7 +283,7 @@ GROUP BY Step
 ORDER BY Step
 """,
         FORMAT_TABLE,
-        (12, 14, 12, 8),
+        (16, 6, 8, 8),
         unit="short",
         description="Chaque résultat d'outil s'ajoute au prompt : une boucle longue devient vite chère.",
         options={
@@ -343,8 +297,146 @@ ORDER BY Step
     ),
 ]
 
+panels.append(
+    panel(
+        "table",
+        "Test A/B : qualité et coût par version",
+        f"""
+SELECT
+    r.AgentVersion AS version,
+    any(r.RequestModel) AS model,
+    count() AS runs,
+    countIf(r.Outcome = 'completed') / count() AS success,
+    countIf(r.Feedback = 1) / nullIf(countIf(r.Feedback != 0), 0) AS thumbs_up,
+    countIf(s.TraceId != '') AS judged,
+    avgIf(s.Score, s.TraceId != '') AS judge_score,
+    countIf(s.Label = 'pass') / nullIf(judged, 0) AS good_answers,
+    avg(r.Steps) AS avg_steps,
+    quantile(0.95)(r.DurationMs) / 1000 AS p95_s,
+    sum(c.CostUsd) / count() AS usd_per_run,
+    sum(c.CostUsd) / nullIf(countIf(r.Outcome = 'completed'), 0) AS usd_per_success,
+    sum(c.CostUsd) / nullIf(countIf(r.Outcome = 'completed') * good_answers, 0) AS usd_per_good_answer
+FROM otel.genai_agent_runs AS r
+LEFT JOIN
+(
+    SELECT TraceId, sum(CostUsd) AS CostUsd
+    FROM otel.genai_llm_calls_priced
+    WHERE $__timeFilter(Timestamp)
+    GROUP BY TraceId
+) AS c ON r.TraceId = c.TraceId
+LEFT JOIN otel.genai_run_scores AS s ON r.TraceId = s.TraceId
+WHERE r.{MAIN} AND $__timeFilter(r.Timestamp)
+GROUP BY version
+ORDER BY version
+""",
+        FORMAT_TABLE,
+        (0, 14, 24, 8),
+        description=(
+            "La v2, moins chère, vaut-elle le coup ? Une tâche réussie n'est pas une bonne réponse : le juge note "
+            "un échantillon des exécutions abouties, et le coût par bonne réponse applique son taux de réussite à "
+            "toutes. Le coût d'une exécution inclut ses sous-agents, tant que le contexte de trace est propagé."
+        ),
+        options={"showHeader": True, "cellHeight": "sm"},
+        overrides=[
+            {
+                "matcher": {"id": "byRegexp", "options": "success|thumbs_up|good_answers"},
+                "properties": [{"id": "unit", "value": "percentunit"}, {"id": "decimals", "value": 1}],
+            },
+            {
+                "matcher": {"id": "byRegexp", "options": "usd_per_.*"},
+                "properties": [{"id": "unit", "value": "currencyUSD"}, {"id": "decimals", "value": 4}],
+            },
+            {
+                "matcher": {"id": "byRegexp", "options": "avg_steps|p95_s|judge_score"},
+                "properties": [{"id": "decimals", "value": 2}],
+            },
+        ],
+    )
+)
+
+# --- Qualité des réponses -------------------------------------------------------------
+# Scores from the asynchronous judge (agent/sonde_agent/evaluator.py), stored as
+# gen_ai.evaluation.result events and joined to the runs by trace id.
+JUDGED_RUNS = f"""
+FROM otel.genai_agent_runs AS r
+INNER JOIN otel.genai_run_scores AS s ON r.TraceId = s.TraceId
+WHERE r.{MAIN} AND $__timeFilter(r.Timestamp)"""
+
+panels.append(row("Qualité des réponses", 22))
+panels += [
+    panel(
+        "timeseries",
+        "Note du juge par version (1 à 5)",
+        f"""
+SELECT $__timeInterval(r.Timestamp) AS time, r.AgentVersion AS version, avg(s.Score) AS score{JUDGED_RUNS}
+GROUP BY time, version
+ORDER BY time
+""",
+        FORMAT_TIMESERIES,
+        (0, 23, 9, 8),
+        decimals=2,
+        display_name="${__field.labels.version}",
+        custom={**TIMESERIES_LINES, "axisSoftMin": 1, "axisSoftMax": 5},
+        options=LEGEND,
+        description=(
+            "Pertinence des réponses notée par un LLM juge, hors du chemin de l'agent. Une version moins chère "
+            "peut garder son taux de succès et répondre moins bien : seul ce panneau le montre."
+        ),
+    ),
+    stat(
+        "Réponses jugées",
+        """
+SELECT uniqExact(TraceId) AS judged
+FROM otel.genai_evaluations
+WHERE $__timeFilter(Timestamp)
+""",
+        9,
+        23,
+        unit="short",
+        w=3,
+        description="Exécutions abouties échantillonnées (SONDE_EVAL_SAMPLE_RATE), puis notées par l'évaluateur.",
+    ),
+    stat(
+        "Coût du juge",
+        """
+SELECT sum(CostUsd) AS spend
+FROM otel.genai_cost_1m
+WHERE AgentName = 'sonde-evaluator' AND $__timeFilter(Minute)
+""",
+        9,
+        27,
+        unit="currencyUSD",
+        decimals=3,
+        w=3,
+        description="L'évaluation consomme aussi des tokens : ses appels sont tracés et chiffrés comme ceux de l'agent.",
+    ),
+    panel(
+        "table",
+        "Réponses les moins bien notées (cliquez un identifiant de trace)",
+        f"""
+SELECT
+    r.Timestamp AS time,
+    r.AgentVersion AS version,
+    r.TaskCategory AS category,
+    s.Score AS score,
+    s.Label AS label,
+    s.Explanation AS explanation,
+    r.TraceId AS trace_id{JUDGED_RUNS}
+ORDER BY score ASC, time DESC
+LIMIT 20
+""",
+        FORMAT_TABLE,
+        (12, 23, 12, 8),
+        options={"showHeader": True, "cellHeight": "sm"},
+        overrides=[
+            {"matcher": {"id": "byName", "options": "trace_id"}, "properties": [{"id": "links", "value": TRACE_LINK}]},
+            {"matcher": {"id": "byName", "options": "score"}, "properties": [{"id": "decimals", "value": 1}]},
+        ],
+    ),
+]
+
 # --- Fiabilité -------------------------------------------------------------------
-panels.append(row("Fiabilité", 22))
+panels.append(row("Fiabilité", 31))
 panels += [
     panel(
         "timeseries",
@@ -357,7 +449,7 @@ GROUP BY time, Outcome
 ORDER BY time
 """,
         FORMAT_TIMESERIES,
-        (0, 23, 12, 8),
+        (0, 32, 12, 8),
         unit="short",
         display_name="${__field.labels.Outcome}",
         custom=TIMESERIES_BARS,
@@ -392,7 +484,7 @@ GROUP BY time, RequestModel
 ORDER BY time
 """,
         FORMAT_TIMESERIES,
-        (12, 23, 12, 8),
+        (12, 32, 12, 8),
         unit="ms",
         display_name="${__field.labels.RequestModel} ${__field.name}",
         custom=TIMESERIES_LINES,
@@ -414,7 +506,7 @@ GROUP BY category
 ORDER BY success
 """,
         FORMAT_TABLE,
-        (0, 31, 12, 8),
+        (0, 40, 12, 8),
         description="Les demandes vagues font tourner l'agent en rond jusqu'au nombre d'étapes maximal.",
         options={"showHeader": True, "cellHeight": "sm"},
         overrides=[
@@ -436,7 +528,7 @@ GROUP BY time
 ORDER BY time
 """,
         FORMAT_TIMESERIES,
-        (12, 31, 12, 8),
+        (12, 40, 12, 8),
         unit="short",
         custom=TIMESERIES_BARS,
         options=LEGEND,
@@ -445,7 +537,7 @@ ORDER BY time
 ]
 
 # --- Outils et sécurité -------------------------------------------------------------
-panels.append(row("Outils et sécurité", 39))
+panels.append(row("Outils et sécurité", 48))
 panels += [
     panel(
         "table",
@@ -464,7 +556,7 @@ GROUP BY tool
 ORDER BY calls DESC
 """,
         FORMAT_TABLE,
-        (0, 40, 10, 8),
+        (0, 49, 10, 8),
         options={"showHeader": True, "cellHeight": "sm"},
         overrides=[
             {
@@ -481,14 +573,14 @@ ORDER BY calls DESC
         "timeseries",
         "Secrets et données personnelles masqués",
         """
-SELECT $__timeInterval(Timestamp) AS time, sum(toUInt64OrZero(SpanAttributes['redaction.masked.count'])) AS "valeurs masquées"
-FROM otel.otel_traces
-WHERE $__timeFilter(Timestamp)
+SELECT $__timeInterval(Minute) AS time, sum(MaskedValues) AS "valeurs masquées"
+FROM otel.span_quality_1m
+WHERE $__timeFilter(Minute)
 GROUP BY time
 ORDER BY time
 """,
         FORMAT_TIMESERIES,
-        (10, 40, 7, 8),
+        (10, 49, 7, 8),
         unit="short",
         custom=TIMESERIES_BARS,
         options=LEGEND,
@@ -508,7 +600,7 @@ ORDER BY Timestamp DESC
 LIMIT 50
 """,
         FORMAT_TABLE,
-        (17, 40, 7, 8),
+        (17, 49, 7, 8),
         options={"showHeader": True, "cellHeight": "sm"},
         overrides=[
             {"matcher": {"id": "byName", "options": "trace_id"}, "properties": [{"id": "links", "value": TRACE_LINK}]}
@@ -546,7 +638,7 @@ FROM
 """
 ZERO_GOOD = [{"color": "green", "value": None}, {"color": "orange", "value": 1}]
 
-panels.append(row("Qualité des données", 48))
+panels.append(row("Qualité des données", 57))
 panels += [
     stat(
         "Appels LLM sans tokens",
@@ -556,7 +648,7 @@ FROM otel.genai_llm_calls
 WHERE $__timeFilter(Timestamp)
 """,
         0,
-        49,
+        58,
         unit="percentunit",
         decimals=1,
         description=(
@@ -572,12 +664,12 @@ WHERE $__timeFilter(Timestamp)
     stat(
         "Spans GenAI sans agent",
         """
-SELECT countIf(SpanAttributes['gen_ai.agent.name'] = '') / count() AS ratio
-FROM otel.otel_traces
-WHERE SpanAttributes['gen_ai.operation.name'] IN ('chat', 'execute_tool') AND $__timeFilter(Timestamp)
+SELECT sum(GenAISpansWithoutAgent) / sum(GenAISpans) AS ratio
+FROM otel.span_quality_1m
+WHERE $__timeFilter(Minute)
 """,
         4,
-        49,
+        58,
         unit="percentunit",
         decimals=1,
         description="Appels LLM ou outils impossibles à attribuer à un agent : ils échappent au test A/B.",
@@ -587,11 +679,12 @@ WHERE SpanAttributes['gen_ai.operation.name'] IN ('chat', 'execute_tool') AND $_
         "Spans orphelins",
         ORPHANS,
         8,
-        49,
+        58,
         unit="short",
         description=(
             "Spans dont le parent n'est jamais arrivé : export perdu, plantage, échantillonnage incohérent. "
-            "Les 2 dernières minutes sont ignorées, le temps que les spans parents se terminent."
+            "Les 2 dernières minutes sont ignorées, le temps que les spans parents se terminent. Seul contrôle "
+            "qui lit les spans bruts : avec l'échantillonnage, il porte sur les traces gardées."
         ),
         thresholds=ZERO_GOOD,
     ),
@@ -599,7 +692,7 @@ WHERE SpanAttributes['gen_ai.operation.name'] IN ('chat', 'execute_tool') AND $_
         "Conversations fragmentées",
         FRAGMENTED,
         12,
-        49,
+        58,
         unit="short",
         description=(
             "Une même conversation répartie sur plusieurs traces : le contexte n'a pas suivi un sous-agent "
@@ -610,24 +703,24 @@ WHERE SpanAttributes['gen_ai.operation.name'] IN ('chat', 'execute_tool') AND $_
     stat(
         "Attributs hérités renommés",
         """
-SELECT countIf(mapContains(SpanAttributes, 'sonde.semconv.legacy')) AS spans
-FROM otel.otel_traces
-WHERE $__timeFilter(Timestamp)
+SELECT sum(LegacyRenamed) AS spans
+FROM otel.span_quality_1m
+WHERE $__timeFilter(Minute)
 """,
         16,
-        49,
+        58,
         unit="short",
         description="Spans dont le collector a converti des noms d'attributs anciens ou tiers vers les conventions actuelles.",
     ),
     stat(
         "Attributs supprimés",
         """
-SELECT sum(toUInt64OrZero(SpanAttributes['redaction.redacted.count'])) AS dropped
-FROM otel.otel_traces
-WHERE $__timeFilter(Timestamp)
+SELECT sum(RedactedAttributes) AS dropped
+FROM otel.span_quality_1m
+WHERE $__timeFilter(Minute)
 """,
         20,
-        49,
+        58,
         unit="short",
         description="Attributs écartés par la liste blanche du collector. Une hausse signale une nouvelle instrumentation à examiner.",
     ),
@@ -650,7 +743,7 @@ ORDER BY time DESC
 LIMIT 50
 """,
         FORMAT_TABLE,
-        (0, 53, 24, 7),
+        (0, 62, 24, 7),
         options={"showHeader": True, "cellHeight": "sm"},
         overrides=[
             {
@@ -662,7 +755,7 @@ LIMIT 50
 ]
 
 # --- Investigation ------------------------------------------------------------------
-panels.append(row("Investigation", 60))
+panels.append(row("Investigation", 69))
 panels += [
     panel(
         "table",
@@ -677,6 +770,7 @@ SELECT
     r.InputTokens + r.OutputTokens AS tokens,
     c.CostUsd AS cost,
     r.DurationMs / 1000 AS duration,
+    if(r.TraceId IN (SELECT TraceId FROM otel.otel_traces_trace_id_ts WHERE Start >= $__fromTime - INTERVAL 1 HOUR), 'oui', 'non') AS trace_kept,
     r.TraceId AS trace_id
 FROM otel.genai_agent_runs AS r
 INNER JOIN
@@ -691,7 +785,11 @@ ORDER BY c.CostUsd DESC
 LIMIT 20
 """,
         FORMAT_TABLE,
-        (0, 61, 24, 8),
+        (0, 70, 24, 8),
+        description=(
+            "Les chiffres viennent des vues, calculées sur 100 % des spans. trace_kept indique si la trace brute "
+            "est encore là : avec l'échantillonnage, seules les traces intéressantes et une part du reste sont gardées."
+        ),
         options={"showHeader": True, "cellHeight": "sm"},
         overrides=[
             {"matcher": {"id": "byName", "options": "trace_id"}, "properties": [{"id": "links", "value": TRACE_LINK}]},
@@ -707,10 +805,18 @@ LIMIT 20
     ),
     panel(
         "traces",
-        "Trace (dernière exécution, ou celle que vous avez cliquée)",
+        "Trace (dernière exécution gardée, ou celle que vous avez cliquée)",
         """
 WITH
-    coalesce(nullIf(${trace_id:sqlstring}, ''), (SELECT argMax(TraceId, Timestamp) FROM otel.genai_agent_runs)) AS trace_id,
+    coalesce(
+        nullIf(${trace_id:sqlstring}, ''),
+        (
+            SELECT argMax(TraceId, Timestamp)
+            FROM otel.genai_agent_runs
+            WHERE ParentAgent = '' AND $__timeFilter(Timestamp)
+              AND TraceId IN (SELECT TraceId FROM otel.otel_traces_trace_id_ts WHERE Start >= $__fromTime - INTERVAL 1 HOUR)
+        )
+    ) AS trace_id,
     (SELECT min(Start) FROM otel.otel_traces_trace_id_ts WHERE TraceId = trace_id) AS trace_start,
     (SELECT max(End) + 1 FROM otel.otel_traces_trace_id_ts WHERE TraceId = trace_id) AS trace_end
 SELECT
@@ -729,7 +835,7 @@ WHERE TraceId = trace_id AND Timestamp >= trace_start AND Timestamp <= trace_end
 ORDER BY startTime ASC
 """,
         FORMAT_TRACE,
-        (0, 69, 24, 16),
+        (0, 78, 24, 16),
     ),
 ]
 

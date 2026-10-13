@@ -22,7 +22,7 @@ services:
       nofile: { soft: 262144, hard: 262144 }
     healthcheck:
       # Healthy once the last init script has run (its view exists).
-      test: ["CMD-SHELL", "clickhouse-client -u \"$$CLICKHOUSE_USER\" --password \"$$CLICKHOUSE_PASSWORD\" -q 'EXISTS TABLE otel.genai_cost_1m' | grep -q 1"]
+      test: ["CMD-SHELL", "clickhouse-client -u \"$$CLICKHOUSE_USER\" --password \"$$CLICKHOUSE_PASSWORD\" -q 'EXISTS TABLE otel.span_quality_1m_mv' | grep -q 1"]
       interval: 3s
       timeout: 5s
       retries: 40
@@ -58,6 +58,8 @@ services:
       SONDE_CAPTURE_CONTENT: ${SONDE_CAPTURE_CONTENT:-errors}
       # Share of sub-agent delegations launched without trace context, to feed the data-quality checks.
       SONDE_FAULT_LOST_CONTEXT_RATE: ${SONDE_FAULT_LOST_CONTEXT_RATE:-0.05}
+      # Share of successful runs whose question and answer are kept for the evaluator.
+      SONDE_EVAL_SAMPLE_RATE: ${SONDE_EVAL_SAMPLE_RATE:-0.3}
       DEPLOYMENT_ENVIRONMENT: demo
       LLM_BASE_URL: ${LLM_BASE_URL:-http://fake-llm:8080/v1}
       LLM_API_KEY: ${LLM_API_KEY:-}
@@ -69,6 +71,32 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"  # reach a local Ollama/vLLM on the host
     depends_on:
+      otel-collector:
+        condition: service_started
+      fake-llm:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Asynchronous LLM-as-a-judge: reads sampled runs from ClickHouse, emits gen_ai.evaluation.result.
+  evaluator:
+    build: ./agent
+    entrypoint: ["python", "-m", "sonde_agent.evaluator"]
+    environment:
+      <<: *clickhouse-credentials
+      CLICKHOUSE_URL: http://clickhouse:8123
+      OTEL_SERVICE_NAME: sonde-evaluator
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      DEPLOYMENT_ENVIRONMENT: demo
+      LLM_BASE_URL: ${JUDGE_BASE_URL:-http://fake-llm:8080/v1}
+      LLM_API_KEY: ${JUDGE_API_KEY:-}
+      LLM_PROVIDER: ${JUDGE_PROVIDER:-fake-llm}
+      JUDGE_MODEL: ${JUDGE_MODEL:-sim-judge}
+      EVALUATOR_INTERVAL_S: ${EVALUATOR_INTERVAL_S:-15}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
       otel-collector:
         condition: service_started
       fake-llm:

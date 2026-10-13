@@ -1,0 +1,27 @@
+# Overlay for the edge collector: the raw branch goes to the tail-sampling
+# gateway instead of ClickHouse. The aggregate branch is untouched, so costs
+# and counts still see 100% of the spans.
+#
+#   otelcol --config=config.yaml --config=overlays/sampling-edge.yaml
+#
+# Tail sampling needs every span of a trace on the same gateway instance:
+# the loadbalancing exporter routes by trace id. With several gateways behind
+# the DNS name, routing by anything else would create orphan spans.
+
+exporters:
+  loadbalancing:
+    routing_key: traceID
+    protocol:
+      otlp:
+        tls:
+          insecure: true
+    resolver:
+      dns:
+        hostname: ${env:SONDE_GATEWAY_HOST:-otel-gateway}
+        port: 4317
+
+service:
+  pipelines:
+    traces/raw:
+      receivers: [forward]
+      exporters: [loadbalancing]

@@ -13,6 +13,7 @@ Span tree of one run:
 from __future__ import annotations
 
 import json
+import random
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -81,11 +82,23 @@ FeedbackFn = Callable[[str], int | None]
 
 
 class Agent:
-    def __init__(self, config: AgentConfig, llm: LLMClient, tools: ToolRegistry, feedback_fn: FeedbackFn | None = None):
+    def __init__(
+        self,
+        config: AgentConfig,
+        llm: LLMClient,
+        tools: ToolRegistry,
+        feedback_fn: FeedbackFn | None = None,
+        eval_sample_rate: float = 0.0,
+        eval_rng: random.Random | None = None,
+    ):
+        """`eval_sample_rate`: share of completed main runs whose question and answer are recorded
+        on the invoke_agent span (sonde.eval.sampled=true) for the asynchronous evaluator."""
         self.config = config
         self.llm = llm
         self.tools = tools
         self.feedback_fn = feedback_fn
+        self.eval_sample_rate = eval_sample_rate
+        self._eval_rng = eval_rng or random.Random()
 
     def run(
         self, task: str, conversation_id: str, category: str = "unknown", parent_agent: str | None = None
@@ -139,6 +152,28 @@ class Agent:
                 if self.llm.capture is Capture.ERRORS:
                     # The whole conversation, recorded once, only for runs that went wrong.
                     span.set_attribute(sc.GEN_AI_INPUT_MESSAGES, json.dumps(to_semconv_messages(messages)))
+            elif (
+                not parent_agent
+                and self.llm.capture is not Capture.OFF
+                and self.eval_sample_rate > 0
+                and self._eval_rng.random() < self.eval_sample_rate
+            ):
+                # A sample of successful runs keeps the question and the final answer, and nothing
+                # else (no tool output), so the evaluator can judge them later.
+                answer = [
+                    {
+                        "role": "assistant",
+                        "parts": [{"type": "text", "content": result.answer}],
+                        "finish_reason": "stop",
+                    }
+                ]
+                span.set_attributes(
+                    {
+                        sc.GEN_AI_INPUT_MESSAGES: json.dumps(to_semconv_messages(messages[1:2])),
+                        sc.GEN_AI_OUTPUT_MESSAGES: json.dumps(answer),
+                        sc.SONDE_EVAL_SAMPLED: True,
+                    }
+                )
 
             if self.feedback_fn is not None:
                 result.feedback = self.feedback_fn(result.outcome)

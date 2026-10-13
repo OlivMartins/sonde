@@ -5,9 +5,12 @@
 -- time, then into per-minute rollups. Dashboards read the small tables; the
 -- raw spans stay available for drill-down.
 --
---   otel_traces ──MV──▶ genai_agent_runs   (one row per agent run)
---               ├─MV──▶ genai_llm_calls    (one row per model call) ──MV──▶ genai_usage_1m
---               └─MV──▶ genai_tool_calls   (one row per tool call)
+-- The views read otel_spans_stream (100% of spans, nothing stored), not
+-- otel_traces, which may be tail-sampled.
+--
+--   otel_spans_stream ──MV──▶ genai_agent_runs   (one row per agent run)
+--                     ├─MV──▶ genai_llm_calls    (one row per model call) ──MV──▶ genai_usage_1m
+--                     └─MV──▶ genai_tool_calls   (one row per tool call)
 
 -- One row per agent run (invoke_agent span), sub-agent runs included -----------
 
@@ -63,7 +66,7 @@ AS SELECT
     toUInt32OrZero(SpanAttributes['gen_ai.usage.cache_read.input_tokens']) AS CacheReadTokens,
     Duration / 1e6 AS DurationMs,
     toInt8OrZero(SpanAttributes['sonde.feedback.score']) AS Feedback
-FROM otel.otel_traces
+FROM otel.otel_spans_stream
 WHERE SpanAttributes['gen_ai.operation.name'] = 'invoke_agent';
 
 -- One row per model call (chat span) ------------------------------------------
@@ -117,7 +120,7 @@ AS SELECT
     toUInt8OrZero(SpanAttributes['sonde.llm.retries']) AS Retries,
     StatusCode,
     SpanAttributes['error.type'] AS ErrorType
-FROM otel.otel_traces
+FROM otel.otel_spans_stream
 WHERE SpanAttributes['gen_ai.operation.name'] = 'chat';
 
 -- One row per tool call (execute_tool span) ------------------------------------
@@ -158,7 +161,7 @@ AS SELECT
     Duration / 1e6 AS DurationMs,
     StatusCode,
     SpanAttributes['error.type'] AS ErrorType
-FROM otel.otel_traces
+FROM otel.otel_spans_stream
 WHERE SpanAttributes['gen_ai.operation.name'] = 'execute_tool';
 
 -- Per-minute rollup of model calls, kept 400 days -------------------------------

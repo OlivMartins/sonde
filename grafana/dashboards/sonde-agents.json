@@ -420,7 +420,7 @@
       "gridPos": {
         "x": 0,
         "y": 6,
-        "w": 12,
+        "w": 8,
         "h": 8
       },
       "targets": [
@@ -468,89 +468,6 @@
     },
     {
       "id": 10,
-      "type": "table",
-      "title": "Test A/B : qualité et coût par version",
-      "description": "La v2, moins chère, vaut-elle le coup ? Le coût par tâche réussie tranche. Le coût d'une exécution inclut ses sous-agents, tant que le contexte de trace est propagé.",
-      "datasource": {
-        "type": "grafana-clickhouse-datasource",
-        "uid": "clickhouse"
-      },
-      "gridPos": {
-        "x": 12,
-        "y": 6,
-        "w": 12,
-        "h": 8
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "grafana-clickhouse-datasource",
-            "uid": "clickhouse"
-          },
-          "editorType": "sql",
-          "format": 1,
-          "queryType": "table",
-          "pluginVersion": "4.22.1",
-          "rawSql": "SELECT\n    r.AgentVersion AS version,\n    any(r.RequestModel) AS model,\n    count() AS runs,\n    countIf(r.Outcome = 'completed') / count() AS success,\n    countIf(r.Feedback = 1) / nullIf(countIf(r.Feedback != 0), 0) AS thumbs_up,\n    avg(r.Steps) AS avg_steps,\n    quantile(0.95)(r.DurationMs) / 1000 AS p95_s,\n    sum(c.CostUsd) / count() AS usd_per_run,\n    sum(c.CostUsd) / nullIf(countIf(r.Outcome = 'completed'), 0) AS usd_per_success\nFROM otel.genai_agent_runs AS r\nLEFT JOIN\n(\n    SELECT TraceId, sum(CostUsd) AS CostUsd\n    FROM otel.genai_llm_calls_priced\n    WHERE $__timeFilter(Timestamp)\n    GROUP BY TraceId\n) AS c ON r.TraceId = c.TraceId\nWHERE r.ParentAgent = '' AND $__timeFilter(r.Timestamp)\nGROUP BY version\nORDER BY version"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "success|thumbs_up"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "percentunit"
-              },
-              {
-                "id": "decimals",
-                "value": 1
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "usd_per_.*"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "currencyUSD"
-              },
-              {
-                "id": "decimals",
-                "value": 4
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": "avg_steps|p95_s"
-            },
-            "properties": [
-              {
-                "id": "decimals",
-                "value": 2
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "showHeader": true,
-        "cellHeight": "sm"
-      }
-    },
-    {
-      "id": 11,
       "type": "timeseries",
       "title": "Tokens par intervalle",
       "description": "",
@@ -559,9 +476,9 @@
         "uid": "clickhouse"
       },
       "gridPos": {
-        "x": 0,
-        "y": 14,
-        "w": 12,
+        "x": 8,
+        "y": 6,
+        "w": 8,
         "h": 8
       },
       "targets": [
@@ -606,7 +523,7 @@
       }
     },
     {
-      "id": 12,
+      "id": 11,
       "type": "barchart",
       "title": "Croissance du contexte : tokens d'entrée moyens par étape",
       "description": "Chaque résultat d'outil s'ajoute au prompt : une boucle longue devient vite chère.",
@@ -615,9 +532,9 @@
         "uid": "clickhouse"
       },
       "gridPos": {
-        "x": 12,
-        "y": 14,
-        "w": 12,
+        "x": 16,
+        "y": 6,
+        "w": 8,
         "h": 8
       },
       "targets": [
@@ -658,9 +575,92 @@
       }
     },
     {
+      "id": 12,
+      "type": "table",
+      "title": "Test A/B : qualité et coût par version",
+      "description": "La v2, moins chère, vaut-elle le coup ? Une tâche réussie n'est pas une bonne réponse : le juge note un échantillon des exécutions abouties, et le coût par bonne réponse applique son taux de réussite à toutes. Le coût d'une exécution inclut ses sous-agents, tant que le contexte de trace est propagé.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "pluginVersion": "4.22.1",
+          "rawSql": "SELECT\n    r.AgentVersion AS version,\n    any(r.RequestModel) AS model,\n    count() AS runs,\n    countIf(r.Outcome = 'completed') / count() AS success,\n    countIf(r.Feedback = 1) / nullIf(countIf(r.Feedback != 0), 0) AS thumbs_up,\n    countIf(s.TraceId != '') AS judged,\n    avgIf(s.Score, s.TraceId != '') AS judge_score,\n    countIf(s.Label = 'pass') / nullIf(judged, 0) AS good_answers,\n    avg(r.Steps) AS avg_steps,\n    quantile(0.95)(r.DurationMs) / 1000 AS p95_s,\n    sum(c.CostUsd) / count() AS usd_per_run,\n    sum(c.CostUsd) / nullIf(countIf(r.Outcome = 'completed'), 0) AS usd_per_success,\n    sum(c.CostUsd) / nullIf(countIf(r.Outcome = 'completed') * good_answers, 0) AS usd_per_good_answer\nFROM otel.genai_agent_runs AS r\nLEFT JOIN\n(\n    SELECT TraceId, sum(CostUsd) AS CostUsd\n    FROM otel.genai_llm_calls_priced\n    WHERE $__timeFilter(Timestamp)\n    GROUP BY TraceId\n) AS c ON r.TraceId = c.TraceId\nLEFT JOIN otel.genai_run_scores AS s ON r.TraceId = s.TraceId\nWHERE r.ParentAgent = '' AND $__timeFilter(r.Timestamp)\nGROUP BY version\nORDER BY version"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "success|thumbs_up|good_answers"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "usd_per_.*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "decimals",
+                "value": 4
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "avg_steps|p95_s|judge_score"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
       "id": 13,
       "type": "row",
-      "title": "Fiabilité",
+      "title": "Qualité des réponses",
       "collapsed": false,
       "gridPos": {
         "x": 0,
@@ -673,6 +673,248 @@
     {
       "id": 14,
       "type": "timeseries",
+      "title": "Note du juge par version (1 à 5)",
+      "description": "Pertinence des réponses notée par un LLM juge, hors du chemin de l'agent. Une version moins chère peut garder son taux de succès et répondre moins bien : seul ce panneau le montre.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 23,
+        "w": 9,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "pluginVersion": "4.22.1",
+          "rawSql": "SELECT $__timeInterval(r.Timestamp) AS time, r.AgentVersion AS version, avg(s.Score) AS score\nFROM otel.genai_agent_runs AS r\nINNER JOIN otel.genai_run_scores AS s ON r.TraceId = s.TraceId\nWHERE r.ParentAgent = '' AND $__timeFilter(r.Timestamp)\nGROUP BY time, version\nORDER BY time"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 2,
+          "displayName": "${__field.labels.version}",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "never",
+            "axisSoftMin": 1,
+            "axisSoftMax": 5
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 15,
+      "type": "stat",
+      "title": "Réponses jugées",
+      "description": "Exécutions abouties échantillonnées (SONDE_EVAL_SAMPLE_RATE), puis notées par l'évaluateur.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 9,
+        "y": 23,
+        "w": 3,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "pluginVersion": "4.22.1",
+          "rawSql": "SELECT uniqExact(TraceId) AS judged\nFROM otel.genai_evaluations\nWHERE $__timeFilter(Timestamp)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 16,
+      "type": "stat",
+      "title": "Coût du juge",
+      "description": "L'évaluation consomme aussi des tokens : ses appels sont tracés et chiffrés comme ceux de l'agent.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 9,
+        "y": 27,
+        "w": 3,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "pluginVersion": "4.22.1",
+          "rawSql": "SELECT sum(CostUsd) AS spend\nFROM otel.genai_cost_1m\nWHERE AgentName = 'sonde-evaluator' AND $__timeFilter(Minute)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 3,
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 17,
+      "type": "table",
+      "title": "Réponses les moins bien notées (cliquez un identifiant de trace)",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 23,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "pluginVersion": "4.22.1",
+          "rawSql": "SELECT\n    r.Timestamp AS time,\n    r.AgentVersion AS version,\n    r.TaskCategory AS category,\n    s.Score AS score,\n    s.Label AS label,\n    s.Explanation AS explanation,\n    r.TraceId AS trace_id\nFROM otel.genai_agent_runs AS r\nINNER JOIN otel.genai_run_scores AS s ON r.TraceId = s.TraceId\nWHERE r.ParentAgent = '' AND $__timeFilter(r.Timestamp)\nORDER BY score ASC, time DESC\nLIMIT 20"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "trace_id"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Ouvrir cette trace plus bas",
+                    "url": "/d/sonde-agents?${__url_time_range}&var-trace_id=${__value.raw}"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "score"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 1
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 18,
+      "type": "row",
+      "title": "Fiabilité",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 31,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 19,
+      "type": "timeseries",
       "title": "Exécutions par issue",
       "description": "",
       "datasource": {
@@ -681,7 +923,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 23,
+        "y": 32,
         "w": 12,
         "h": 8
       },
@@ -774,7 +1016,7 @@
       }
     },
     {
-      "id": 15,
+      "id": 20,
       "type": "timeseries",
       "title": "Latence du LLM par modèle (p50 / p95)",
       "description": "",
@@ -784,7 +1026,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 23,
+        "y": 32,
         "w": 12,
         "h": 8
       },
@@ -828,7 +1070,7 @@
       }
     },
     {
-      "id": 16,
+      "id": 21,
       "type": "table",
       "title": "Issues par catégorie de tâche",
       "description": "Les demandes vagues font tourner l'agent en rond jusqu'au nombre d'étapes maximal.",
@@ -838,7 +1080,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 31,
+        "y": 40,
         "w": 12,
         "h": 8
       },
@@ -895,7 +1137,7 @@
       }
     },
     {
-      "id": 17,
+      "id": 22,
       "type": "timeseries",
       "title": "Limites de débit : tentatives et appels LLM en échec",
       "description": "Essayez : curl -X POST localhost:8080/admin/faults -d '{\"rate_limit_rate\": 0.4}'",
@@ -905,7 +1147,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 31,
+        "y": 40,
         "w": 12,
         "h": 8
       },
@@ -951,20 +1193,20 @@
       }
     },
     {
-      "id": 18,
+      "id": 23,
       "type": "row",
       "title": "Outils et sécurité",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 39,
+        "y": 48,
         "w": 24,
         "h": 1
       },
       "panels": []
     },
     {
-      "id": 19,
+      "id": 24,
       "type": "table",
       "title": "Appels d'outils",
       "description": "",
@@ -974,7 +1216,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 40,
+        "y": 49,
         "w": 10,
         "h": 8
       },
@@ -1035,7 +1277,7 @@
       }
     },
     {
-      "id": 20,
+      "id": 25,
       "type": "timeseries",
       "title": "Secrets et données personnelles masqués",
       "description": "E-mails, clés d'API et jetons trouvés dans les prompts et résultats d'outils, masqués avant stockage. Les regex ne voient que des formats connus : voir les limites dans docs/ARCHITECTURE.md.",
@@ -1045,7 +1287,7 @@
       },
       "gridPos": {
         "x": 10,
-        "y": 40,
+        "y": 49,
         "w": 7,
         "h": 8
       },
@@ -1060,7 +1302,7 @@
           "format": 0,
           "queryType": "timeseries",
           "pluginVersion": "4.22.1",
-          "rawSql": "SELECT $__timeInterval(Timestamp) AS time, sum(toUInt64OrZero(SpanAttributes['redaction.masked.count'])) AS \"valeurs masquées\"\nFROM otel.otel_traces\nWHERE $__timeFilter(Timestamp)\nGROUP BY time\nORDER BY time"
+          "rawSql": "SELECT $__timeInterval(Minute) AS time, sum(MaskedValues) AS \"valeurs masquées\"\nFROM otel.span_quality_1m\nWHERE $__timeFilter(Minute)\nGROUP BY time\nORDER BY time"
         }
       ],
       "fieldConfig": {
@@ -1091,7 +1333,7 @@
       }
     },
     {
-      "id": 21,
+      "id": 26,
       "type": "table",
       "title": "Tentatives d'outils refusées",
       "description": "",
@@ -1101,7 +1343,7 @@
       },
       "gridPos": {
         "x": 17,
-        "y": 40,
+        "y": 49,
         "w": 7,
         "h": 8
       },
@@ -1147,20 +1389,20 @@
       }
     },
     {
-      "id": 22,
+      "id": 27,
       "type": "row",
       "title": "Qualité des données",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 48,
+        "y": 57,
         "w": 24,
         "h": 1
       },
       "panels": []
     },
     {
-      "id": 23,
+      "id": 28,
       "type": "stat",
       "title": "Appels LLM sans tokens",
       "description": "Appels réussis sans usage de tokens : signe d'un attribut renommé ou d'une instrumentation qui ne suit pas les conventions. Le coût affiché est alors faux, sans aucune erreur.",
@@ -1170,7 +1412,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 49,
+        "y": 58,
         "w": 4,
         "h": 4
       },
@@ -1229,7 +1471,7 @@
       }
     },
     {
-      "id": 24,
+      "id": 29,
       "type": "stat",
       "title": "Spans GenAI sans agent",
       "description": "Appels LLM ou outils impossibles à attribuer à un agent : ils échappent au test A/B.",
@@ -1239,7 +1481,7 @@
       },
       "gridPos": {
         "x": 4,
-        "y": 49,
+        "y": 58,
         "w": 4,
         "h": 4
       },
@@ -1254,7 +1496,7 @@
           "format": 1,
           "queryType": "table",
           "pluginVersion": "4.22.1",
-          "rawSql": "SELECT countIf(SpanAttributes['gen_ai.agent.name'] = '') / count() AS ratio\nFROM otel.otel_traces\nWHERE SpanAttributes['gen_ai.operation.name'] IN ('chat', 'execute_tool') AND $__timeFilter(Timestamp)"
+          "rawSql": "SELECT sum(GenAISpansWithoutAgent) / sum(GenAISpans) AS ratio\nFROM otel.span_quality_1m\nWHERE $__timeFilter(Minute)"
         }
       ],
       "fieldConfig": {
@@ -1294,17 +1536,17 @@
       }
     },
     {
-      "id": 25,
+      "id": 30,
       "type": "stat",
       "title": "Spans orphelins",
-      "description": "Spans dont le parent n'est jamais arrivé : export perdu, plantage, échantillonnage incohérent. Les 2 dernières minutes sont ignorées, le temps que les spans parents se terminent.",
+      "description": "Spans dont le parent n'est jamais arrivé : export perdu, plantage, échantillonnage incohérent. Les 2 dernières minutes sont ignorées, le temps que les spans parents se terminent. Seul contrôle qui lit les spans bruts : avec l'échantillonnage, il porte sur les traces gardées.",
       "datasource": {
         "type": "grafana-clickhouse-datasource",
         "uid": "clickhouse"
       },
       "gridPos": {
         "x": 8,
-        "y": 49,
+        "y": 58,
         "w": 4,
         "h": 4
       },
@@ -1358,7 +1600,7 @@
       }
     },
     {
-      "id": 26,
+      "id": 31,
       "type": "stat",
       "title": "Conversations fragmentées",
       "description": "Une même conversation répartie sur plusieurs traces : le contexte n'a pas suivi un sous-agent lancé dans un thread. Son coût n'est plus rattaché à l'exécution qui l'a délégué.",
@@ -1368,7 +1610,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 49,
+        "y": 58,
         "w": 4,
         "h": 4
       },
@@ -1422,7 +1664,7 @@
       }
     },
     {
-      "id": 27,
+      "id": 32,
       "type": "stat",
       "title": "Attributs hérités renommés",
       "description": "Spans dont le collector a converti des noms d'attributs anciens ou tiers vers les conventions actuelles.",
@@ -1432,7 +1674,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 49,
+        "y": 58,
         "w": 4,
         "h": 4
       },
@@ -1447,7 +1689,7 @@
           "format": 1,
           "queryType": "table",
           "pluginVersion": "4.22.1",
-          "rawSql": "SELECT countIf(mapContains(SpanAttributes, 'sonde.semconv.legacy')) AS spans\nFROM otel.otel_traces\nWHERE $__timeFilter(Timestamp)"
+          "rawSql": "SELECT sum(LegacyRenamed) AS spans\nFROM otel.span_quality_1m\nWHERE $__timeFilter(Minute)"
         }
       ],
       "fieldConfig": {
@@ -1474,7 +1716,7 @@
       }
     },
     {
-      "id": 28,
+      "id": 33,
       "type": "stat",
       "title": "Attributs supprimés",
       "description": "Attributs écartés par la liste blanche du collector. Une hausse signale une nouvelle instrumentation à examiner.",
@@ -1484,7 +1726,7 @@
       },
       "gridPos": {
         "x": 20,
-        "y": 49,
+        "y": 58,
         "w": 4,
         "h": 4
       },
@@ -1499,7 +1741,7 @@
           "format": 1,
           "queryType": "table",
           "pluginVersion": "4.22.1",
-          "rawSql": "SELECT sum(toUInt64OrZero(SpanAttributes['redaction.redacted.count'])) AS dropped\nFROM otel.otel_traces\nWHERE $__timeFilter(Timestamp)"
+          "rawSql": "SELECT sum(RedactedAttributes) AS dropped\nFROM otel.span_quality_1m\nWHERE $__timeFilter(Minute)"
         }
       ],
       "fieldConfig": {
@@ -1526,7 +1768,7 @@
       }
     },
     {
-      "id": 29,
+      "id": 34,
       "type": "table",
       "title": "Conversations fragmentées : traces à recoller",
       "description": "",
@@ -1536,7 +1778,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 53,
+        "y": 62,
         "w": 24,
         "h": 7
       },
@@ -1582,30 +1824,30 @@
       }
     },
     {
-      "id": 30,
+      "id": 35,
       "type": "row",
       "title": "Investigation",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 60,
+        "y": 69,
         "w": 24,
         "h": 1
       },
       "panels": []
     },
     {
-      "id": 31,
+      "id": 36,
       "type": "table",
       "title": "Exécutions les plus chères (cliquez un identifiant de trace)",
-      "description": "",
+      "description": "Les chiffres viennent des vues, calculées sur 100 % des spans. trace_kept indique si la trace brute est encore là : avec l'échantillonnage, seules les traces intéressantes et une part du reste sont gardées.",
       "datasource": {
         "type": "grafana-clickhouse-datasource",
         "uid": "clickhouse"
       },
       "gridPos": {
         "x": 0,
-        "y": 61,
+        "y": 70,
         "w": 24,
         "h": 8
       },
@@ -1620,7 +1862,7 @@
           "format": 1,
           "queryType": "table",
           "pluginVersion": "4.22.1",
-          "rawSql": "SELECT\n    r.Timestamp AS time,\n    r.AgentVersion AS version,\n    r.TaskCategory AS category,\n    r.Outcome AS outcome,\n    r.Steps AS steps,\n    r.InputTokens + r.OutputTokens AS tokens,\n    c.CostUsd AS cost,\n    r.DurationMs / 1000 AS duration,\n    r.TraceId AS trace_id\nFROM otel.genai_agent_runs AS r\nINNER JOIN\n(\n    SELECT TraceId, sum(CostUsd) AS CostUsd\n    FROM otel.genai_llm_calls_priced\n    WHERE $__timeFilter(Timestamp)\n    GROUP BY TraceId\n) AS c ON r.TraceId = c.TraceId\nWHERE r.ParentAgent = '' AND $__timeFilter(r.Timestamp)\nORDER BY c.CostUsd DESC\nLIMIT 20"
+          "rawSql": "SELECT\n    r.Timestamp AS time,\n    r.AgentVersion AS version,\n    r.TaskCategory AS category,\n    r.Outcome AS outcome,\n    r.Steps AS steps,\n    r.InputTokens + r.OutputTokens AS tokens,\n    c.CostUsd AS cost,\n    r.DurationMs / 1000 AS duration,\n    if(r.TraceId IN (SELECT TraceId FROM otel.otel_traces_trace_id_ts WHERE Start >= $__fromTime - INTERVAL 1 HOUR), 'oui', 'non') AS trace_kept,\n    r.TraceId AS trace_id\nFROM otel.genai_agent_runs AS r\nINNER JOIN\n(\n    SELECT TraceId, sum(CostUsd) AS CostUsd\n    FROM otel.genai_llm_calls_priced\n    WHERE $__timeFilter(Timestamp)\n    GROUP BY TraceId\n) AS c ON r.TraceId = c.TraceId\nWHERE r.ParentAgent = '' AND $__timeFilter(r.Timestamp)\nORDER BY c.CostUsd DESC\nLIMIT 20"
         }
       ],
       "fieldConfig": {
@@ -1683,9 +1925,9 @@
       }
     },
     {
-      "id": 32,
+      "id": 37,
       "type": "traces",
-      "title": "Trace (dernière exécution, ou celle que vous avez cliquée)",
+      "title": "Trace (dernière exécution gardée, ou celle que vous avez cliquée)",
       "description": "",
       "datasource": {
         "type": "grafana-clickhouse-datasource",
@@ -1693,7 +1935,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 69,
+        "y": 78,
         "w": 24,
         "h": 16
       },
@@ -1708,7 +1950,7 @@
           "format": 3,
           "queryType": "traces",
           "pluginVersion": "4.22.1",
-          "rawSql": "WITH\n    coalesce(nullIf(${trace_id:sqlstring}, ''), (SELECT argMax(TraceId, Timestamp) FROM otel.genai_agent_runs)) AS trace_id,\n    (SELECT min(Start) FROM otel.otel_traces_trace_id_ts WHERE TraceId = trace_id) AS trace_start,\n    (SELECT max(End) + 1 FROM otel.otel_traces_trace_id_ts WHERE TraceId = trace_id) AS trace_end\nSELECT\n    TraceId AS traceID,\n    SpanId AS spanID,\n    ParentSpanId AS parentSpanID,\n    ServiceName AS serviceName,\n    SpanName AS operationName,\n    multiply(toUnixTimestamp64Nano(Timestamp), 0.000001) AS startTime,\n    multiply(Duration, 0.000001) AS duration,\n    arrayMap(key -> map('key', key, 'value', SpanAttributes[key]), mapKeys(SpanAttributes)) AS tags,\n    arrayMap(key -> map('key', key, 'value', ResourceAttributes[key]), mapKeys(ResourceAttributes)) AS serviceTags,\n    if(StatusCode IN ('Error', 'STATUS_CODE_ERROR'), 2, 0) AS statusCode\nFROM otel.otel_traces\nWHERE TraceId = trace_id AND Timestamp >= trace_start AND Timestamp <= trace_end\nORDER BY startTime ASC"
+          "rawSql": "WITH\n    coalesce(\n        nullIf(${trace_id:sqlstring}, ''),\n        (\n            SELECT argMax(TraceId, Timestamp)\n            FROM otel.genai_agent_runs\n            WHERE ParentAgent = '' AND $__timeFilter(Timestamp)\n              AND TraceId IN (SELECT TraceId FROM otel.otel_traces_trace_id_ts WHERE Start >= $__fromTime - INTERVAL 1 HOUR)\n        )\n    ) AS trace_id,\n    (SELECT min(Start) FROM otel.otel_traces_trace_id_ts WHERE TraceId = trace_id) AS trace_start,\n    (SELECT max(End) + 1 FROM otel.otel_traces_trace_id_ts WHERE TraceId = trace_id) AS trace_end\nSELECT\n    TraceId AS traceID,\n    SpanId AS spanID,\n    ParentSpanId AS parentSpanID,\n    ServiceName AS serviceName,\n    SpanName AS operationName,\n    multiply(toUnixTimestamp64Nano(Timestamp), 0.000001) AS startTime,\n    multiply(Duration, 0.000001) AS duration,\n    arrayMap(key -> map('key', key, 'value', SpanAttributes[key]), mapKeys(SpanAttributes)) AS tags,\n    arrayMap(key -> map('key', key, 'value', ResourceAttributes[key]), mapKeys(ResourceAttributes)) AS serviceTags,\n    if(StatusCode IN ('Error', 'STATUS_CODE_ERROR'), 2, 0) AS statusCode\nFROM otel.otel_traces\nWHERE TraceId = trace_id AND Timestamp >= trace_start AND Timestamp <= trace_end\nORDER BY startTime ASC"
         }
       ],
       "fieldConfig": {

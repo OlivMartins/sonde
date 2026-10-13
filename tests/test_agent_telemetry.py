@@ -232,3 +232,37 @@ def test_capture_policy_from_environment(monkeypatch):
     assert capture_from_env() is Capture.ALL
     monkeypatch.setenv("SONDE_CAPTURE_CONTENT", "Errors")
     assert capture_from_env() is Capture.ERRORS
+
+
+def test_completed_runs_sampled_for_evaluation_keep_question_and_answer_only(make_agent, span_exporter):
+    task = "checkout-service p95 latency doubled, find out why."
+    result = make_agent("v1", capture="errors", eval_sample_rate=1.0).run(task, "conv-20", category="latency")
+    spans = span_exporter.get_finished_spans()
+    (root,) = by_operation(spans, sc.OP_INVOKE_AGENT)
+    assert root.attributes[sc.SONDE_EVAL_SAMPLED] is True
+    question = json.loads(root.attributes[sc.GEN_AI_INPUT_MESSAGES])
+    answer = json.loads(root.attributes[sc.GEN_AI_OUTPUT_MESSAGES])
+    assert question == [{"role": "user", "parts": [{"type": "text", "content": task}]}]  # no system prompt
+    assert answer[0]["parts"][0]["content"] == result.answer
+    for span in spans:  # tool outputs and intermediate turns stay out
+        if span is not root:
+            assert not CONTENT_KEYS & set(span.attributes), span.name
+
+
+def test_evaluation_sampling_respects_the_capture_policy_and_skips_failures(make_agent, span_exporter, faults):
+    make_agent("v1", capture="off", eval_sample_rate=1.0).run("checkout-service p95 latency doubled.", "c1")
+    make_agent("v1", capture="errors", eval_sample_rate=0.0).run("checkout-service p95 latency doubled.", "c2")
+    faults.update({"loop_rate": 1})
+    make_agent("v1", capture="errors", eval_sample_rate=1.0).run("Something feels off in production.", "c3")
+    roots = by_operation(span_exporter.get_finished_spans(), sc.OP_INVOKE_AGENT)
+    assert len(roots) == 3
+    assert not any(r.attributes.get(sc.SONDE_EVAL_SAMPLED) for r in roots)
+
+
+def test_sub_agent_runs_are_never_sampled_for_evaluation(make_agent, span_exporter):
+    make_agent("v1", capture="all", delegation=True, eval_sample_rate=1.0).run(
+        "orders-api returns HTTP 500, investigate.", "conv-21", category="errors"
+    )
+    roots = by_operation(span_exporter.get_finished_spans(), sc.OP_INVOKE_AGENT)
+    sampled = [r.name for r in roots if r.attributes.get(sc.SONDE_EVAL_SAMPLED)]
+    assert len(roots) == 2 and sampled == ["invoke_agent sre-copilot"]

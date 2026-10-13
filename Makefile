@@ -1,25 +1,31 @@
 .DEFAULT_GOAL := help
 COMPOSE := docker compose
 
-.PHONY: help up infra down clean logs sql chaos calm dev test lint dashboard e2e package
+.PHONY: help up up-sampling infra down clean logs evals sql chaos calm dev test lint dashboard e2e package
 
 help: ## Affiche cette aide
-	@grep -E '^[a-z0-9_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
+	@grep -E '^[a-z0-9_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
 up: ## Construit et démarre toute la stack, puis ouvrez http://localhost:3000
 	$(COMPOSE) up -d --build
+
+up-sampling: ## Même stack, avec un gateway d'échantillonnage en queue devant les spans bruts
+	$(COMPOSE) -f docker-compose.yml -f docker-compose.sampling.yml up -d --build
 
 infra: ## Démarre le socle seul (ClickHouse, collector, Grafana), sans l'agent de démo
 	$(COMPOSE) up -d clickhouse otel-collector grafana
 
 down: ## Arrête la stack (garde les données)
-	$(COMPOSE) down
+	$(COMPOSE) -f docker-compose.yml -f docker-compose.sampling.yml down
 
 clean: ## Arrête la stack et supprime toutes les données
-	$(COMPOSE) down -v
+	$(COMPOSE) -f docker-compose.yml -f docker-compose.sampling.yml down -v
 
 logs: ## Suit le journal de l'agent : une ligne par exécution
 	$(COMPOSE) logs -f agent
+
+evals: ## Suit le journal de l'évaluateur (LLM juge)
+	$(COMPOSE) logs -f evaluator
 
 sql: ## Ouvre un shell ClickHouse sur la base otel
 	$(COMPOSE) exec clickhouse sh -c 'clickhouse-client -u "$$CLICKHOUSE_USER" --password "$$CLICKHOUSE_PASSWORD" -d otel'

@@ -40,6 +40,13 @@ GEN_AI_TOOL_CALL_RESULT = "gen_ai.tool.call.result"  # opt-in content
 GEN_AI_INPUT_MESSAGES = "gen_ai.input.messages"  # opt-in content
 GEN_AI_OUTPUT_MESSAGES = "gen_ai.output.messages"  # opt-in content
 
+# Evaluation event (gen_ai.evaluation.result), emitted as a log record parented to the evaluated span
+EVENT_EVALUATION_RESULT = "gen_ai.evaluation.result"
+GEN_AI_EVALUATION_NAME = "gen_ai.evaluation.name"
+GEN_AI_EVALUATION_SCORE_VALUE = "gen_ai.evaluation.score.value"
+GEN_AI_EVALUATION_SCORE_LABEL = "gen_ai.evaluation.score.label"
+GEN_AI_EVALUATION_EXPLANATION = "gen_ai.evaluation.explanation"
+
 # General semantic conventions
 ERROR_TYPE = "error.type"
 SERVER_ADDRESS = "server.address"
@@ -55,6 +62,8 @@ SONDE_AGENT_TOOL_CALLS = "sonde.agent.tool_calls"
 SONDE_LLM_RETRIES = "sonde.llm.retries"
 SONDE_TOOL_BLOCKED = "sonde.tool.blocked"
 SONDE_FEEDBACK_SCORE = "sonde.feedback.score"
+SONDE_EVAL_SAMPLED = "sonde.eval.sampled"  # question and answer kept for the evaluator
+SONDE_EVALUATION_JUDGE_MODEL = "sonde.evaluation.judge_model"
 SONDE_SEMCONV_LEGACY = "sonde.semconv.legacy"  # set by the collector when it renamed a legacy attribute
 
 # Span event emitted for each retried LLM request

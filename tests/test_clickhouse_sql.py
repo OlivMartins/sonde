@@ -11,20 +11,25 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
 from clickhouse_support import (
-    INITDB,
     ROOT,
     Redaction,
     expand_grafana_macros,
-    span_to_row,
-    sql_statements,
+    insert_rows,
+    log_to_row,
+    new_session,
+    query,
+    store,
 )
 from sonde_agent import semconv as sc
+from sonde_agent.evaluator import Evaluator, candidates_sql
+from sonde_agent.llm import LLMClient
 
-chdb_session = pytest.importorskip("chdb.session")
+pytest.importorskip("chdb")
 
 DASHBOARD = ROOT / "grafana" / "dashboards" / "sonde-agents.json"
 ALERTS = ROOT / "grafana" / "provisioning" / "alerting" / "sonde-alerts.yaml"
@@ -46,32 +51,52 @@ def spans(replayed_spans):
 
 
 @pytest.fixture(scope="module")
-def ch(spans, tmp_path_factory):
-    session = chdb_session.Session(str(tmp_path_factory.mktemp("chdb")))
-    for script in sorted(INITDB.glob("*.sql")):
-        for statement in sql_statements(script):
-            session.query(statement)
+def world(spans, tmp_path_factory, span_exporter, log_exporter, logger_provider, fake_llm_url):
+    """ClickHouse after the agents ran, then after the evaluator judged the sampled runs."""
+    import fake_llm
 
+    session = new_session(tmp_path_factory.mktemp("chdb"))
     redaction = Redaction()
-    rows = "\n".join(json.dumps(span_to_row(span, redaction)) for span in spans)
-    session.query(
-        "INSERT INTO otel.otel_traces SETTINGS date_time_input_format = 'best_effort' FORMAT JSONEachRow\n" + rows
+    store(session, spans, redaction)
+
+    original = fake_llm.Faults.snapshot()
+    fake_llm.Faults.update({"latency_factor": 0, "rate_limit_rate": 0, "error_rate": 0})
+    span_exporter.clear()
+    log_exporter.clear()
+    llm = LLMClient(fake_llm_url, provider="fake-llm", backoff_base_s=0)
+    evaluator = Evaluator(llm, "sim-judge", lambda sql: query(session, sql), logger_provider)
+    emitted = evaluator.run_until_idle()
+    llm.close()
+    fake_llm.Faults.update(original)
+
+    judge_spans = list(span_exporter.get_finished_spans())
+    logs = list(log_exporter.get_finished_logs())
+    span_exporter.clear()
+    store(session, judge_spans, redaction)
+    insert_rows(session, "otel.otel_logs", [log_to_row(record, redaction) for record in logs])
+    yield SimpleNamespace(
+        session=session, spans=spans + judge_spans, judge_spans=judge_spans, logs=logs, emitted=emitted
     )
-    yield session
     session.close()
 
 
-def query(session, sql: str) -> list[dict]:
-    result = session.query(sql, "JSONEachRow")
-    text = result.bytes().decode() if hasattr(result, "bytes") else str(result)
-    return [json.loads(line) for line in text.splitlines() if line.strip()]
+@pytest.fixture(scope="module")
+def ch(world):
+    return world.session
+
+
+@pytest.fixture(scope="module")
+def stored(world):
+    """Every span that reached ClickHouse: agents and evaluator."""
+    return world.spans
 
 
 def count_operation(spans, operation: str) -> int:
     return sum(1 for s in spans if s.attributes.get(sc.GEN_AI_OPERATION_NAME) == operation)
 
 
-def test_materialized_views_type_every_genai_span(ch, spans):
+def test_materialized_views_type_every_genai_span(ch, stored):
+    spans = stored
     assert query(ch, "SELECT count() AS n FROM otel.otel_traces")[0]["n"] == len(spans)
     invoke_spans = count_operation(spans, sc.OP_INVOKE_AGENT)
     assert query(ch, "SELECT count() AS n FROM otel.genai_agent_runs")[0]["n"] == invoke_spans
@@ -154,6 +179,55 @@ def test_secrets_are_masked_but_json_stays_valid(ch):
     assert int(masked[0]["n"]) > 0
 
 
+def test_evaluations_land_in_clickhouse_attached_to_their_runs(world, ch):
+    sampled = [s for s in world.spans if s.attributes.get(sc.SONDE_EVAL_SAMPLED)]
+    assert sampled and world.emitted == len(sampled) == len(world.logs)
+    rows = query(
+        ch,
+        """
+        SELECT r.AgentName AS agent, r.ParentAgent AS parent, r.Outcome AS outcome, e.JudgeModel AS judge
+        FROM otel.genai_evaluations AS e
+        INNER JOIN otel.genai_agent_runs AS r ON e.TraceId = r.TraceId AND e.SpanId = r.SpanId""",
+    )
+    assert len(rows) == len(sampled)
+    assert {(r["agent"], r["parent"], r["outcome"], r["judge"]) for r in rows} == {
+        ("sre-copilot", "", "completed", "sim-judge")
+    }
+    # nothing left to judge on the next poll
+    assert query(ch, candidates_sql(1000)) == []
+    # the judge has a cost, tracked like any agent's
+    judge = query(ch, "SELECT sum(CostUsd) AS cost FROM otel.genai_cost_1m WHERE AgentName = 'sonde-evaluator'")[0]
+    assert judge["cost"] > 0
+
+
+def test_judge_scores_follow_answer_quality(ch):
+    rows = query(
+        ch,
+        """
+        SELECT t.SpanAttributes['gen_ai.output.messages'] AS answer, s.Score AS score, s.Label AS label
+        FROM otel.genai_run_scores AS s
+        INNER JOIN otel.otel_traces AS t ON t.TraceId = s.TraceId
+        WHERE t.SpanAttributes['sonde.eval.sampled'] = 'true'""",
+    )
+    shallow = [r["score"] for r in rows if "seems related to recent changes" in r["answer"]]
+    with_runbook = [r["score"] for r in rows if "RB-" in r["answer"]]
+    assert shallow and with_runbook
+    assert max(shallow) < 2.5 < 3.8 <= min(with_runbook)
+    assert {r["label"] for r in rows} == {"pass", "fail"}
+
+
+def test_cost_per_good_answer_is_never_below_cost_per_success(ch):
+    (panel,) = [p for p in json.loads(DASHBOARD.read_text())["panels"] if p["title"].startswith("Test A/B")]
+    now = datetime.now(UTC)
+    sql = expand_grafana_macros(panel["targets"][0]["rawSql"], now - timedelta(hours=1), now + timedelta(hours=1))
+    rows = query(ch, sql)
+    assert [r["version"] for r in rows] == ["v1", "v2"]
+    for r in rows:
+        assert r["judged"] > 0 and 1 <= r["judge_score"] <= 5
+        if r["usd_per_good_answer"] is not None:
+            assert r["usd_per_good_answer"] >= r["usd_per_success"]
+
+
 def dashboard_queries():
     dashboard = json.loads(DASHBOARD.read_text())
     for panel in dashboard["panels"]:
@@ -214,7 +288,8 @@ def test_every_alert_query_returns_a_time_series(ch, sql):
     assert rows and next(iter(rows[0])) == "time" and len(rows[0]) == 2
 
 
-def test_data_quality_checks_catch_what_went_wrong(ch, spans):
+def test_data_quality_checks_catch_what_went_wrong(ch, stored):
+    spans = stored
     now = datetime.now(UTC)
 
     def stat(title):

@@ -41,6 +41,7 @@ def main() -> None:
     # Content capture is opt-in, as recommended by the GenAI conventions: off, errors or all.
     capture = capture_from_env()
     lost_context_rate = float(os.getenv("SONDE_FAULT_LOST_CONTEXT_RATE", "0"))
+    eval_sample_rate = float(os.getenv("SONDE_EVAL_SAMPLE_RATE", "0"))
     sub_agents = ThreadPoolExecutor(max_workers=max(2, args.concurrency), thread_name_prefix="sub-agent")
     llm = LLMClient(
         base_url=os.getenv("LLM_BASE_URL", "http://localhost:8080/v1"),
@@ -76,7 +77,9 @@ def main() -> None:
                 return
             version = "v2" if rng.random() < v2_share else "v1"
             config = variants[version]
-            agent = Agent(config, llm, tools, feedback_fn=make_feedback_fn(rng, version))
+            agent = Agent(
+                config, llm, tools, feedback_fn=make_feedback_fn(rng, version), eval_sample_rate=eval_sample_rate
+            )
             category, task = pick_task(rng)
             try:
                 result = agent.run(task, conversation_id=str(uuid.uuid4()), category=category)

@@ -1,0 +1,22 @@
+# Overlay: also send the traces to Langfuse, after normalization and masking.
+# Your privacy rules apply before anything leaves for a SaaS.
+#
+#   LANGFUSE_OTLP_ENDPOINT=https://cloud.langfuse.com/api/public/otel   (EU; self-hosted: http://<host>:3000/api/public/otel)
+#   LANGFUSE_AUTH=$(printf '%s' "pk-lf-...:sk-lf-..." | base64)
+#   otelcol --config=config.yaml --config=overlays/langfuse.yaml
+#
+# Langfuse ingests OTLP over HTTP only and reads the gen_ai.* attributes
+# (model, usage, request parameters).
+
+exporters:
+  otlphttp/langfuse:
+    endpoint: ${env:LANGFUSE_OTLP_ENDPOINT}
+    headers:
+      Authorization: Basic ${env:LANGFUSE_AUTH}
+      x-langfuse-ingestion-version: "4"
+
+service:
+  pipelines:
+    traces/langfuse:
+      receivers: [forward]
+      exporters: [otlphttp/langfuse]

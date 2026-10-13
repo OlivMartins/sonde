@@ -1,0 +1,96 @@
+# Tail-sampling gateway (docker-compose.sampling.yml).
+#
+# Keeps every trace worth investigating, and a sample of the rest, in
+# otel_traces. Only the raw table is sampled: the edge collector writes 100% of
+# the spans to otel_spans_stream, which feeds the aggregates.
+#
+# decision_wait must exceed the duration of an agent run: the decision is taken
+# once, decision_wait after the first span of a trace is seen.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+  tail_sampling:
+    decision_wait: 30s
+    num_traces: 50000
+    expected_new_traces_per_sec: 50
+    policies:
+      # anything that failed: LLM errors, loops (max steps), failed tools
+      - name: errors
+        type: status_code
+        status_code:
+          status_codes: [ERROR]
+      # a model asked for a tool it was not given
+      - name: refused-tools
+        type: boolean_attribute
+        boolean_attribute:
+          key: sonde.tool.blocked
+          value: true
+      # the provider rate-limited us
+      - name: retried
+        type: numeric_attribute
+        numeric_attribute:
+          key: sonde.llm.retries
+          min_value: 1
+          max_value: 1000
+      # expensive runs (total input tokens on the invoke_agent span)
+      - name: expensive
+        type: numeric_attribute
+        numeric_attribute:
+          key: gen_ai.usage.input_tokens
+          min_value: 12000
+          max_value: 100000000
+      # the evaluator needs these traces: their question and answer are on the root span
+      - name: sampled-for-evaluation
+        type: boolean_attribute
+        boolean_attribute:
+          key: sonde.eval.sampled
+          value: true
+      # and 10% of everything else
+      - name: baseline
+        type: probabilistic
+        probabilistic:
+          sampling_percentage: ${env:SONDE_BASELINE_SAMPLING_PERCENT:-10}
+
+exporters:
+  clickhouse:
+    endpoint: tcp://clickhouse:9000?dial_timeout=10s
+    database: otel
+    username: ${env:CLICKHOUSE_USER}
+    password: ${env:CLICKHOUSE_PASSWORD}
+    create_schema: false
+    traces_table_name: otel_traces
+    async_insert: true
+    compress: lz4
+    timeout: 10s
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 1000
+      batch:
+        flush_timeout: 2s
+        min_size: 2000
+    retry_on_failure:
+      enabled: true
+      initial_interval: 2s
+      max_interval: 30s
+      max_elapsed_time: 300s
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, tail_sampling]
+      exporters: [clickhouse]
+  telemetry:
+    logs:
+      level: info

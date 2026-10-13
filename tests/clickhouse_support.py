@@ -108,6 +108,86 @@ def span_to_row(span, redaction: Redaction) -> dict:
     }
 
 
+def log_to_row(record, redaction: Redaction) -> dict:
+    """What the exporter writes into otel_logs for one log record."""
+    log = record.log_record
+    resource = redaction(dict(record.resource.attributes))
+    return {
+        "Timestamp": timestamp(log.timestamp or log.observed_timestamp),
+        "TraceId": format(log.trace_id or 0, "032x") if log.trace_id else "",
+        "SpanId": format(log.span_id or 0, "016x") if log.span_id else "",
+        "TraceFlags": int(log.trace_flags or 0),
+        "SeverityText": log.severity_text or "",
+        "SeverityNumber": log.severity_number.value if log.severity_number else 0,
+        "ServiceName": resource.get("service.name", ""),
+        "Body": as_string(log.body) if log.body is not None else "",
+        "ResourceSchemaUrl": "",
+        "ResourceAttributes": resource,
+        "ScopeSchemaUrl": "",
+        "ScopeName": record.instrumentation_scope.name if record.instrumentation_scope else "",
+        "ScopeVersion": "",
+        "ScopeAttributes": {},
+        "LogAttributes": redaction(dict(log.attributes or {})),
+        "EventName": log.event_name or "",
+    }
+
+
+def insert_rows(session, table: str, rows: list[dict]) -> None:
+    if rows:
+        payload = "\n".join(json.dumps(row) for row in rows)
+        session.query(
+            f"INSERT INTO {table} SETTINGS date_time_input_format = 'best_effort' FORMAT JSONEachRow\n{payload}"
+        )
+
+
+def new_session(path):
+    """An embedded ClickHouse with the schema of clickhouse/initdb/ (one per process at a time)."""
+    from chdb import session as chdb_session
+
+    session = chdb_session.Session(str(path))
+    for script in sorted(INITDB.glob("*.sql")):
+        for statement in sql_statements(script):
+            session.query(statement)
+    return session
+
+
+def store(session, spans, redaction: Redaction, raw_trace_ids: set[int] | None = None) -> None:
+    """Write spans as the collector does: every span to the stream, which feeds the views,
+    and to the raw table either all of them or only the traces kept by tail sampling."""
+    rows = [span_to_row(span, redaction) for span in spans]
+    insert_rows(session, "otel.otel_spans_stream", rows)
+    if raw_trace_ids is not None:
+        rows = [row for row, span in zip(rows, spans, strict=True) if span.context.trace_id in raw_trace_ids]
+    insert_rows(session, "otel.otel_traces", rows)
+
+
+def query(session, sql: str) -> list[dict]:
+    result = session.query(sql, "JSONEachRow")
+    text = result.bytes().decode() if hasattr(result, "bytes") else str(result)
+    return [json.loads(line) for line in text.splitlines() if line.strip()]
+
+
+def kept_by_tail_sampling(spans, baseline_percent: int = 10) -> set[int]:
+    """The trace ids otel-collector/gateway.yaml would keep: same policies and thresholds.
+    The baseline is approximated by trace id modulo 100, the collector hashes the id."""
+    keep: set[int] = set()
+    by_trace: dict[int, list] = {}
+    for span in spans:
+        by_trace.setdefault(span.context.trace_id, []).append(span)
+    for trace_id, trace_spans in by_trace.items():
+        interesting = any(
+            s.status.status_code == StatusCode.ERROR
+            or s.attributes.get("sonde.tool.blocked") is True
+            or int(s.attributes.get("sonde.llm.retries", 0)) >= 1
+            or int(s.attributes.get("gen_ai.usage.input_tokens", 0)) >= 12000
+            or s.attributes.get("sonde.eval.sampled") is True
+            for s in trace_spans
+        )
+        if interesting or trace_id % 100 < baseline_percent:
+            keep.add(trace_id)
+    return keep
+
+
 def expand_grafana_macros(sql: str, start: datetime, end: datetime, interval_s: int = 60) -> str:
     """Same expansions as the Grafana ClickHouse plugin (pkg/macros)."""
     t0, t1 = int(start.timestamp()), int(end.timestamp())

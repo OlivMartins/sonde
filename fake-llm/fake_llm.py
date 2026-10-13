@@ -28,6 +28,7 @@ MODEL_PROFILES = {
     # base latency (ms), generation speed (ms per output token), prefill (ms per input token)
     "sim-large": {"base_ms": 450, "ms_per_token": 9.0, "prefill_ms_per_token": 0.05},
     "sim-mini": {"base_ms": 180, "ms_per_token": 4.0, "prefill_ms_per_token": 0.02},
+    "sim-judge": {"base_ms": 250, "ms_per_token": 5.0, "prefill_ms_per_token": 0.02},
 }
 DEFAULT_PROFILE = {"base_ms": 300, "ms_per_token": 6.0, "prefill_ms_per_token": 0.03}
 
@@ -71,6 +72,7 @@ FINAL_ANSWERS = {
         "the last deploy; runbook RB-204 applies."
     ),
 }
+FINAL_ANSWERS["shallow"] = "The issue on {svc} seems related to recent changes. Please investigate further."
 HALLUCINATED_TOOLS = {"block_ip_address"}
 
 
@@ -86,6 +88,8 @@ class Faults:
         "parallel_tool_rate": float(os.getenv("FAKE_LLM_PARALLEL_TOOL_RATE", "0.3")),
         # small models second-guess themselves: extra tool round instead of answering
         "small_model_dither_rate": float(os.getenv("FAKE_LLM_SMALL_MODEL_DITHER_RATE", "0.25")),
+        # small models sometimes answer without evidence: the judge scores those low
+        "small_model_shallow_rate": float(os.getenv("FAKE_LLM_SMALL_MODEL_SHALLOW_RATE", "0.2")),
         "latency_factor": float(os.getenv("FAKE_LLM_LATENCY_FACTOR", "1.0")),  # multiplier
         "retry_after_s": float(os.getenv("FAKE_LLM_RETRY_AFTER_S", "1")),  # seconds
     }
@@ -200,10 +204,52 @@ def decide_tools(conv: Conversation, model: str, offered: set[str], rng: random.
     return step
 
 
+def judge(answer: str, rng: random.Random) -> dict:
+    """A fake LLM-as-a-judge: rewards answers that cite evidence and a runbook."""
+    text = answer.lower()
+    if "rb-" in text and ("root cause" in text or "recommended action" in text or "runbook" in text):
+        base, reason = 4.4, "Cites a root cause, the evidence and the runbook to apply."
+    elif "could not find a clear anomaly" in text:
+        base, reason = 3.0, "Honest about the lack of evidence and asks for a precise scope."
+    elif "seems related to recent changes" in text:
+        base, reason = 1.8, "No evidence, no runbook: the answer cannot be acted upon."
+    else:
+        base, reason = 3.2, "Partially relevant."
+    score = round(min(5.0, max(1.0, base + rng.uniform(-0.4, 0.4))), 1)
+    return {"score": score, "label": "pass" if score >= 4 else "fail", "explanation": reason}
+
+
+def judge_completion(model: str, messages: list[dict], rng: random.Random) -> dict:
+    user = next((str(m.get("content") or "") for m in reversed(messages) if m.get("role") == "user"), "")
+    try:
+        answer = str(json.loads(user).get("answer", ""))
+    except (json.JSONDecodeError, AttributeError):
+        answer = user
+    content = json.dumps(judge(answer, rng))
+    prompt_tokens = count_tokens(json.dumps(messages))
+    completion_tokens = count_tokens(content) + rng.randint(5, 40)
+    time.sleep((250 + 5 * completion_tokens) / 1000 * Faults.get("latency_factor"))
+    return {
+        "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": f"{model}-2026-06-01",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+            "prompt_tokens_details": {"cached_tokens": 0},
+        },
+    }
+
+
 def complete(body: dict, rng: random.Random) -> dict:
     model = str(body.get("model") or "sim-mini")
     messages = body.get("messages") or []
     tools = body.get("tools") or []
+    if model.startswith("sim-judge"):
+        return judge_completion(model, messages, rng)
     conv = Conversation(messages)
 
     offered = {t.get("function", {}).get("name", "") for t in tools}
@@ -226,6 +272,12 @@ def complete(body: dict, rng: random.Random) -> dict:
     else:
         # an agent without the ticketing tool is a sub-agent: it reports, it does not act
         key = "analysis" if conv.category == "errors" and "create_incident_ticket" not in offered else conv.category
+        if (
+            "mini" in model
+            and key not in {"analysis", "vague"}
+            and rng.random() < Faults.get("small_model_shallow_rate")
+        ):
+            key = "shallow"
         text = FINAL_ANSWERS[key].format(svc=conv.service)
         message = {"role": "assistant", "content": text}
         finish_reason = "stop"

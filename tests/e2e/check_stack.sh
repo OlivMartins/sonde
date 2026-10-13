@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Vérifie une stack démarrée de bout en bout :
-# agent -> OTLP -> collector (normalisation, liste blanche, masquage) -> ClickHouse -> vues matérialisées.
+# agent -> OTLP -> collector (normalisation, liste blanche, masquage) -> ClickHouse -> vues matérialisées,
+# puis évaluateur -> gen_ai.evaluation.result -> genai_evaluations.
 set -euo pipefail
 
 summary=""
@@ -69,8 +70,18 @@ check "agrégat à la minute (appels)" "SELECT sum(Calls) FROM otel.genai_usage_
 check "dépense LLM (USD)" "SELECT round(sum(CostUsd), 4) FROM otel.genai_cost_1m"
 check "valeurs masquées" "SELECT sum(toUInt64OrZero(SpanAttributes['redaction.masked.count'])) FROM otel.otel_traces"
 check "conversations fragmentées" "SELECT count() FROM (SELECT ConversationId FROM otel.genai_agent_runs WHERE ConversationId != '' GROUP BY ConversationId HAVING uniqExact(TraceId) > 1)"
+check "compteurs de qualité (flux)" "SELECT sum(Spans) FROM otel.span_quality_1m"
 check "span hérité normalisé" "SELECT count() FROM otel.genai_llm_calls WHERE TraceId = '${trace_id}' AND Provider = 'legacy-provider' AND InputTokens = 123 AND OutputTokens = 45"
 check "marqueur sonde.semconv.legacy" "SELECT count() FROM otel.otel_traces WHERE TraceId = '${trace_id}' AND mapContains(SpanAttributes, 'sonde.semconv.legacy')"
+
+echo "attente des premières évaluations du juge..."
+for _ in $(seq 1 30); do
+  [ "$(ch "SELECT count() FROM otel.genai_evaluations" 2>/dev/null || echo 0)" -ge 1 ] && break
+  sleep 5
+done
+check "évaluations (gen_ai.evaluation.result)" "SELECT count() FROM otel.genai_evaluations"
+check "évaluations rattachées à une exécution" "SELECT count() FROM otel.genai_evaluations AS e INNER JOIN otel.genai_agent_runs AS r ON e.TraceId = r.TraceId AND e.SpanId = r.SpanId"
+check "coût du juge (USD)" "SELECT round(sum(CostUsd), 6) FROM otel.genai_cost_1m WHERE AgentName = 'sonde-evaluator'"
 
 leaks=$(ch "SELECT count() FROM otel.otel_traces WHERE arrayExists(v -> v LIKE '%@example.%' OR v LIKE '%api_key=demo_%', mapValues(SpanAttributes))")
 printf '  %-34s %s\n' "secrets en clair" "$leaks"

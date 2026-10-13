@@ -1,6 +1,9 @@
 # OpenTelemetry Collector (contrib 0.162.0)
 #
-#   agent ──OTLP──▶ memory_limiter ──▶ normalize ──▶ redaction ──▶ ClickHouse exporter
+#                                                      ┌─▶ traces/aggregates ─▶ drop content ─▶ otel_spans_stream (100%, feeds the views)
+#   agent ─OTLP─▶ traces/in: normalize ─▶ redaction ─▶ forward
+#                                                      └─▶ traces/raw ───────────────────────▶ otel_traces (drill-down)
+#   evaluator ─OTLP─▶ logs: redaction ─▶ otel_logs (gen_ai.evaluation.result events)
 #
 #   normalize  maps legacy or third-party GenAI attribute names to the current
 #              conventions, so a SDK upgrade or another instrumentation library
@@ -8,8 +11,12 @@
 #              with sonde.semconv.legacy (tracked on the dashboard).
 #   redaction  fail-closed allow-list of attribute keys, then masking of
 #              secret-looking values in what is left.
+#   forward    sends every span both ways. Overlays change the raw branch only:
+#              overlays/sampling-edge.yaml routes it to a tail-sampling gateway,
+#              overlays/langfuse.yaml and overlays/phoenix.yaml add a copy to
+#              those tools. Aggregates and costs always see 100% of the spans.
 #
-# The exporter does not create tables (create_schema: false): the schema is
+# The exporters do not create tables (create_schema: false): the schema is
 # owned by clickhouse/initdb/, as recommended for production deployments.
 
 receivers:
@@ -19,6 +26,9 @@ receivers:
         endpoint: 0.0.0.0:4317
       http:
         endpoint: 0.0.0.0:4318
+
+connectors:
+  forward:
 
 processors:
   memory_limiter:
@@ -148,6 +158,13 @@ processors:
       - sonde.tool.blocked
       - sonde.feedback.score
       - sonde.semconv.legacy
+      - sonde.eval.sampled
+      # evaluation events (logs)
+      - gen_ai.evaluation.name
+      - gen_ai.evaluation.score.value
+      - gen_ai.evaluation.score.label
+      - gen_ai.evaluation.explanation
+      - sonde.evaluation.judge_model
     blocked_values:
       # e-mail addresses
       - '[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+'
@@ -158,14 +175,49 @@ processors:
     # Adds redaction.masked.count and redaction.redacted.count: the dashboard tracks both.
     summary: info
 
+  # The views only need numbers and names: content stays out of the aggregate branch.
+  transform/drop_content:
+    error_mode: ignore
+    trace_statements:
+      - 'delete_key(span.attributes, "gen_ai.input.messages")'
+      - 'delete_key(span.attributes, "gen_ai.output.messages")'
+      - 'delete_key(span.attributes, "gen_ai.tool.call.arguments")'
+      - 'delete_key(span.attributes, "gen_ai.tool.call.result")'
+      - 'delete_key(span.attributes, "gen_ai.system_instructions")'
+      - 'delete_key(span.attributes, "gen_ai.tool.definitions")'
+
 exporters:
-  clickhouse:
+  clickhouse/stream:
+    endpoint: tcp://clickhouse:9000?dial_timeout=10s
+    database: otel
+    username: ${env:CLICKHOUSE_USER}
+    password: ${env:CLICKHOUSE_PASSWORD}
+    create_schema: false
+    traces_table_name: otel_spans_stream
+    async_insert: true
+    compress: lz4
+    timeout: 10s
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 1000
+      batch:
+        flush_timeout: 2s
+        min_size: 2000
+    retry_on_failure:
+      enabled: true
+      initial_interval: 2s
+      max_interval: 30s
+      max_elapsed_time: 300s
+
+  clickhouse/raw:
     endpoint: tcp://clickhouse:9000?dial_timeout=10s
     database: otel
     username: ${env:CLICKHOUSE_USER}
     password: ${env:CLICKHOUSE_PASSWORD}
     create_schema: false
     traces_table_name: otel_traces
+    logs_table_name: otel_logs
     async_insert: true
     compress: lz4
     timeout: 10s
@@ -185,10 +237,21 @@ exporters:
 
 service:
   pipelines:
-    traces:
+    traces/in:
       receivers: [otlp]
       processors: [memory_limiter, transform/genai_normalize, redaction/genai]
-      exporters: [clickhouse]
+      exporters: [forward]
+    traces/aggregates:
+      receivers: [forward]
+      processors: [transform/drop_content]
+      exporters: [clickhouse/stream]
+    traces/raw:
+      receivers: [forward]
+      exporters: [clickhouse/raw]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, redaction/genai]
+      exporters: [clickhouse/raw]
   telemetry:
     logs:
       level: info

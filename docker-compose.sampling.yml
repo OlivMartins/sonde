@@ -1,0 +1,31 @@
+# Tail sampling: keep every interesting trace, and 10% of the rest.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.sampling.yml up -d --build
+#
+# The edge collector keeps writing 100% of the spans to otel_spans_stream
+# (aggregates and costs stay exact) and routes the raw branch, by trace id,
+# to a gateway that applies the sampling policies before otel_traces.
+
+services:
+  otel-collector:
+    command:
+      - --config=/etc/otelcol-contrib/config.yaml
+      - --config=/etc/otelcol-contrib/overlays/sampling-edge.yaml
+    volumes:
+      - ./otel-collector/overlays:/etc/otelcol-contrib/overlays:ro
+    depends_on:
+      otel-gateway:
+        condition: service_started
+
+  otel-gateway:
+    image: otel/opentelemetry-collector-contrib:0.162.0
+    command: ["--config=/etc/otelcol-contrib/gateway.yaml"]
+    environment:
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-sonde}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-sonde}
+      SONDE_BASELINE_SAMPLING_PERCENT: ${SONDE_BASELINE_SAMPLING_PERCENT:-10}
+    volumes:
+      - ./otel-collector/gateway.yaml:/etc/otelcol-contrib/gateway.yaml:ro
+    depends_on:
+      clickhouse:
+        condition: service_healthy

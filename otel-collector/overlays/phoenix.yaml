@@ -1,0 +1,17 @@
+# Overlay: also send the traces to Arize Phoenix, after normalization and masking.
+#
+#   PHOENIX_OTLP_ENDPOINT=http://phoenix:6006   (the exporter appends /v1/traces)
+#   otelcol --config=config.yaml --config=overlays/phoenix.yaml
+#
+# Phoenix shows every span. Its LLM-specific views were designed for the
+# OpenInference conventions: depending on its version, gen_ai.* may map only partly.
+
+exporters:
+  otlphttp/phoenix:
+    endpoint: ${env:PHOENIX_OTLP_ENDPOINT}
+
+service:
+  pipelines:
+    traces/phoenix:
+      receivers: [forward]
+      exporters: [otlphttp/phoenix]

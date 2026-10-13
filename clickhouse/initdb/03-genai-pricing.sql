@@ -20,7 +20,8 @@ ORDER BY (Model, EffectiveFrom);
 
 INSERT INTO otel.genai_model_pricing VALUES
     ('sim-large', '2026-01-01 00:00:00', 2.50, 0.25, 10.00),
-    ('sim-mini', '2026-01-01 00:00:00', 0.40, 0.04, 1.60);
+    ('sim-mini', '2026-01-01 00:00:00', 0.40, 0.04, 1.60),
+    ('sim-judge', '2026-01-01 00:00:00', 0.40, 0.04, 1.60);
 
 -- Model calls with their cost.
 CREATE VIEW IF NOT EXISTS otel.genai_llm_calls_priced
