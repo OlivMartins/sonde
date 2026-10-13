@@ -21,7 +21,7 @@ LEFT JOIN
     FROM otel.genai_llm_calls_priced
     GROUP BY TraceId
 ) AS c ON r.TraceId = c.TraceId
-WHERE r.Timestamp >= now() - INTERVAL 1 DAY
+WHERE r.ParentAgent = '' AND r.Timestamp >= now() - INTERVAL 1 DAY
 GROUP BY version, category
 ORDER BY usd_per_success DESC;
 ```
@@ -51,7 +51,7 @@ SELECT
     round(loops / runs * 100, 1) AS loop_pct,
     round(avg(ToolCalls), 1) AS avg_tool_calls
 FROM otel.genai_agent_runs
-WHERE Timestamp >= now() - INTERVAL 1 DAY
+WHERE ParentAgent = '' AND Timestamp >= now() - INTERVAL 1 DAY
 GROUP BY category, version
 ORDER BY loop_pct DESC;
 ```
@@ -105,6 +105,72 @@ FROM otel.genai_tool_calls
 WHERE Blocked = 1
 GROUP BY tool
 ORDER BY attempts DESC;
+```
+
+## Ce que coûtent les sous-agents
+
+La dépense par agent : les appels d’un sous-agent portent son propre nom.
+
+```sql
+SELECT
+    AgentName AS agent,
+    count() AS llm_calls,
+    round(sum(CostUsd), 4) AS cost_usd,
+    round(sum(CostUsd) / sum(sum(CostUsd)) OVER (), 3) AS share
+FROM otel.genai_llm_calls_priced
+WHERE Timestamp >= now() - INTERVAL 1 DAY
+GROUP BY agent
+ORDER BY cost_usd DESC;
+```
+
+## Conversations fragmentées
+
+Une conversation répartie sur plusieurs traces : un sous-agent est parti sans le contexte de son parent.
+
+```sql
+SELECT
+    ConversationId AS conversation,
+    uniqExact(TraceId) AS traces,
+    groupUniqArray(AgentName) AS agents,
+    groupUniqArrayIf(TraceId, ParentAgent != '' AND TraceId NOT IN (
+        SELECT TraceId FROM otel.genai_agent_runs WHERE ParentAgent = ''
+    )) AS detached_traces
+FROM otel.genai_agent_runs
+WHERE ConversationId != '' AND Timestamp >= now() - INTERVAL 1 HOUR
+GROUP BY conversation
+HAVING traces > 1
+ORDER BY traces DESC;
+```
+
+## Spans orphelins
+
+Des spans dont le parent n’est jamais arrivé. Les deux dernières minutes sont écartées : un parent n’est exporté qu’une fois terminé, après ses enfants.
+
+```sql
+SELECT ServiceName, SpanName, count() AS orphans
+FROM otel.otel_traces
+WHERE Timestamp >= now() - INTERVAL 1 HOUR
+  AND Timestamp <= now() - INTERVAL 2 MINUTE
+  AND ParentSpanId != ''
+  AND (TraceId, ParentSpanId) NOT IN
+  (
+      SELECT TraceId, SpanId FROM otel.otel_traces WHERE Timestamp >= now() - INTERVAL 2 HOUR
+  )
+GROUP BY ServiceName, SpanName
+ORDER BY orphans DESC;
+```
+
+## Attributs renommés ou supprimés par le collector
+
+```sql
+SELECT
+    SpanAttributes['sonde.semconv.legacy'] AS renamed_from,
+    count() AS spans,
+    sum(toUInt64OrZero(SpanAttributes['redaction.redacted.count'])) AS attributes_dropped
+FROM otel.otel_traces
+WHERE Timestamp >= now() - INTERVAL 1 DAY
+GROUP BY renamed_from
+ORDER BY spans DESC;
 ```
 
 ## Contrôle : un secret a-t-il échappé au masquage ?
