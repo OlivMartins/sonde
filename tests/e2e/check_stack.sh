@@ -78,9 +78,12 @@ check "compteurs de qualité (flux)" "SELECT sum(Spans) FROM otel.span_quality_1
 check "span hérité normalisé" "SELECT count() FROM otel.genai_llm_calls WHERE TraceId = '${trace_id}' AND Provider = 'legacy-provider' AND InputTokens = 123 AND OutputTokens = 45"
 check "marqueur sonde.semconv.legacy" "SELECT count() FROM otel.otel_traces WHERE TraceId = '${trace_id}' AND mapContains(SpanAttributes, 'sonde.semconv.legacy')"
 
-echo "attente des premières évaluations du juge..."
+# L'événement d'évaluation et le span de l'appel au juge arrivent par deux files distinctes.
+echo "attente des premières évaluations du juge et de leur coût..."
 for _ in $(seq 1 30); do
-  [ "$(ch "SELECT count() FROM otel.genai_evaluations" 2>/dev/null || echo 0)" -ge 1 ] && break
+  evals=$(ch "SELECT count() FROM otel.genai_evaluations" 2>/dev/null || echo 0)
+  judge=$(ch "SELECT count() FROM otel.genai_llm_calls WHERE AgentName = 'sonde-evaluator'" 2>/dev/null || echo 0)
+  if [ "${evals:-0}" -ge 1 ] && [ "${judge:-0}" -ge 1 ]; then break; fi
   sleep 5
 done
 check "évaluations (gen_ai.evaluation.result)" "SELECT count() FROM otel.genai_evaluations"
