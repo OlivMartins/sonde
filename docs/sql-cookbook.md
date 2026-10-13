@@ -26,6 +26,62 @@ GROUP BY version, category
 ORDER BY usd_per_success DESC;
 ```
 
+## Coût par bonne réponse
+
+Une tâche « réussie » s’est terminée par une réponse, pas forcément par une bonne. Le juge note un échantillon des exécutions abouties ; son taux de réussite s’applique à toutes.
+
+```sql
+SELECT
+    r.AgentVersion AS version,
+    countIf(r.Outcome = 'completed') AS successes,
+    countIf(s.TraceId != '') AS judged,
+    round(avgIf(s.Score, s.TraceId != ''), 2) AS judge_score,
+    round(countIf(s.Label = 'pass') / nullIf(judged, 0), 3) AS good_rate,
+    round(sum(c.CostUsd) / nullIf(successes * good_rate, 0), 4) AS usd_per_good_answer
+FROM otel.genai_agent_runs AS r
+LEFT JOIN
+(
+    SELECT TraceId, sum(CostUsd) AS CostUsd
+    FROM otel.genai_llm_calls_priced
+    GROUP BY TraceId
+) AS c ON r.TraceId = c.TraceId
+LEFT JOIN otel.genai_run_scores AS s ON r.TraceId = s.TraceId
+WHERE r.ParentAgent = '' AND r.Timestamp >= now() - INTERVAL 1 DAY
+GROUP BY version
+ORDER BY version;
+```
+
+## Les réponses recalées par le juge, avec la question
+
+```sql
+SELECT
+    s.Score AS score,
+    s.Explanation AS why,
+    t.SpanAttributes['gen_ai.input.messages'] AS question,
+    t.SpanAttributes['gen_ai.output.messages'] AS answer,
+    t.TraceId AS trace_id
+FROM otel.genai_run_scores AS s
+INNER JOIN otel.otel_traces AS t ON t.TraceId = s.TraceId
+WHERE s.Label = 'fail'
+  AND t.SpanAttributes['sonde.eval.sampled'] = 'true'
+  AND t.Timestamp >= now() - INTERVAL 1 DAY
+ORDER BY score
+LIMIT 20;
+```
+
+## Ce que coûte le juge
+
+```sql
+SELECT
+    AgentName AS agent,
+    round(sum(CostUsd), 4) AS usd,
+    round(usd / (SELECT sum(CostUsd) FROM otel.genai_cost_1m WHERE Minute >= now() - INTERVAL 1 DAY) * 100, 1) AS pct_of_spend
+FROM otel.genai_cost_1m
+WHERE Minute >= now() - INTERVAL 1 DAY
+GROUP BY agent
+ORDER BY usd DESC;
+```
+
 ## Ce que le cache de prompt a fait économiser
 
 ```sql
@@ -160,7 +216,40 @@ GROUP BY ServiceName, SpanName
 ORDER BY orphans DESC;
 ```
 
-## Attributs renommés ou supprimés par le collector
+## Ce que l’échantillonnage a gardé
+
+Avec le profil d’échantillonnage, les exécutions sont toutes comptées, mais seules certaines gardent leur trace brute. Les échecs doivent être à 100 %.
+
+```sql
+SELECT
+    Outcome AS outcome,
+    count() AS runs,
+    countIf(TraceId IN (SELECT TraceId FROM otel.otel_traces_trace_id_ts)) AS raw_kept,
+    round(raw_kept / runs * 100, 1) AS kept_pct
+FROM otel.genai_agent_runs
+WHERE ParentAgent = '' AND Timestamp >= now() - INTERVAL 1 DAY
+GROUP BY outcome
+ORDER BY outcome;
+```
+
+## Attributs renommés, supprimés ou masqués, par service
+
+Ces compteurs sont alimentés par le flux : ils restent exacts quand les spans bruts sont échantillonnés.
+
+```sql
+SELECT
+    ServiceName AS service,
+    sum(Spans) AS spans,
+    sum(LegacyRenamed) AS renamed,
+    sum(RedactedAttributes) AS attributes_dropped,
+    sum(MaskedValues) AS values_masked
+FROM otel.span_quality_1m
+WHERE Minute >= now() - INTERVAL 1 DAY
+GROUP BY service
+ORDER BY spans DESC;
+```
+
+Le détail, par nom d’attribut converti :
 
 ```sql
 SELECT

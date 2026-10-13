@@ -2,6 +2,38 @@
 
 Toutes les évolutions notables de Sonde sont consignées ici. Le format s’inspire de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les versions suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.3.0] - 2026-10-13
+
+Juger la qualité des réponses, échantillonner les traces sans fausser les chiffres, et s’ouvrir aux autres outils. Une tâche « réussie » n’est pas forcément une bonne réponse, garder chaque span coûte cher, et Sonde doit pouvoir alimenter Langfuse ou Phoenix plutôt que les concurrencer.
+
+### À savoir avant de mettre à jour
+
+- **Schéma ClickHouse.** Les vues matérialisées lisent désormais `otel_spans_stream`, une table au moteur `Null` qui reçoit 100 % des spans, et non plus `otel_traces`. Nouvelles tables : `otel_logs`, `genai_evaluations`, `span_quality_1m`, et la vue `genai_run_scores`. Repartez de zéro avec `docker compose down -v`, puis `docker compose up -d --build`. Si vous écrivez des spans dans ClickHouse par un autre chemin que le collector de Sonde, écrivez-les aussi dans `otel_spans_stream`, sans quoi les vues ne voient plus rien.
+- **Collector.** Le pipeline `traces` devient `traces/in`, qui normalise et filtre, puis se divise en `traces/aggregates` (sans le contenu, vers le flux) et `traces/raw` (vers `otel_traces`). Un pipeline `logs` reçoit les évaluations. Reportez vos modifications locales sur cette structure.
+- **Nouveau service.** `evaluator` démarre avec la stack et note les réponses avec le juge simulé. Avec un vrai modèle, renseignez `JUDGE_MODEL`, `JUDGE_BASE_URL` et `JUDGE_API_KEY` : chaque note coûte un appel.
+- **Tableau de bord.** Une rangée « Qualité des réponses » s’insère après « Coût et test A/B », et la table du test A/B passe en pleine largeur.
+
+### Ajouté
+
+- Évaluateur asynchrone (`python -m sonde_agent.evaluator`) : il lit les exécutions retenues pour l’évaluation, demande une note de 1 à 5 à un LLM juge et émet l’événement standard `gen_ai.evaluation.result`, rattaché au span évalué. Il lit par pages, ne juge jamais deux fois et abandonne une évaluation en échec. Ses propres appels sont tracés et chiffrés sous l’agent `sonde-evaluator`.
+- Échantillonnage pour l’évaluation (`SONDE_EVAL_SAMPLE_RATE`, 30 % dans la démo) : une exécution aboutie garde sa question et sa réponse finale, rien d’autre.
+- Coût par bonne réponse dans le test A/B, avec le nombre de réponses jugées, la note moyenne et le taux de bonnes réponses.
+- Rangée « Qualité des réponses » : note du juge par version, réponses jugées, coût du juge, réponses les moins bien notées avec leur trace.
+- Profil d’échantillonnage en queue (`docker-compose.sampling.yml`, `make up-sampling`) : un collector gateway garde les traces en erreur, avec outil refusé, nouvelle tentative, coût élevé ou retenues pour l’évaluation, plus 10 % du reste (`SONDE_BASELINE_SAMPLING_PERCENT`). Le routage par identifiant de trace garde chaque trace entière.
+- Compteurs de qualité calculés sur le flux (`span_quality_1m`) : spans sans agent, attributs renommés, supprimés et masqués restent exacts sous échantillonnage.
+- Colonne `trace_kept` dans les exécutions les plus chères : la trace brute existe-t-elle encore ?
+- Surcouches d’export vers Langfuse et Arize Phoenix (`otel-collector/overlays/`), après normalisation et masquage.
+- Faux LLM : juge `sim-judge`, et réponses bâclées du petit modèle (`small_model_shallow_rate`) pour donner du travail au juge.
+- Documentation : évaluation, échantillonnage en queue, interopérabilité, limites du juge et de l’échantillonnage, piste de recherche vectorielle sur les échecs, nouvelles recettes SQL. Le README raconte d’où vient le projet.
+- Tests : évaluateur (notes, événement, pagination), échantillonnage rejoué dans chDB et comparé à la vérité calculée sur tous les spans, surcouches du collector. En CI, toutes les configurations du collector sont validées, les évaluations doivent arriver, et une seconde stack tourne avec le gateway d’échantillonnage.
+- `make evals` pour suivre le juge.
+
+### Modifié
+
+- La branche des agrégats retire le contenu des messages : seuls les spans bruts le portent.
+- L’explorateur de traces s’ouvre sur la dernière exécution dont la trace brute a été gardée.
+- `make down` et `make clean` arrêtent aussi le gateway d’échantillonnage.
+
 ## [0.2.0] - 2026-10-13
 
 Robustesse face aux trois limites relevées sur la 0.1 : un masquage par regex présenté comme suffisant, des vues ClickHouse qui écrivent 0 en silence si un attribut change de nom, et un contexte de trace qui ne suit pas les sous-agents lancés dans un thread.
@@ -50,5 +82,6 @@ Première version : un socle d’observabilité pour agents IA, de la trace Open
 - Intégration continue : tests à chaque push, puis démarrage de la stack complète et interrogation de chaque panneau à travers Grafana. À la publication d’une release, l’archive, sa somme de contrôle et le tableau de bord sont construits et joints automatiquement.
 - Politique de sécurité (`SECURITY.md`), licence Apache 2.0 et `NOTICE`.
 
+[0.3.0]: https://github.com/OlivMartins/sonde/releases/tag/v0.3.0
 [0.2.0]: https://github.com/OlivMartins/sonde/releases/tag/v0.2.0
 [0.1.0]: https://github.com/OlivMartins/sonde/releases/tag/v0.1.0
