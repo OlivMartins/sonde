@@ -31,7 +31,7 @@ AS SELECT
         + c.CacheReadTokens * p.CachedInputUsdPerMTok
         + c.OutputTokens * p.OutputUsdPerMTok
     ) / 1e6 AS CostUsd,
-    p.Model != '' AS Priced
+    CAST(p.Model != '', 'UInt8') AS Priced  -- plain UInt8: the server rejects LowCardinality(UInt8) columns
 FROM
 (
     SELECT *, toDateTime(Timestamp) AS CallTime
