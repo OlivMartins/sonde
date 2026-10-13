@@ -33,20 +33,8 @@ jobs:
       SONDE_FAULT_LOST_CONTEXT_RATE: "0.5"
     steps:
       - uses: actions/checkout@v5
-      - name: Valider les configurations du collector (socle, gateway, overlays)
-        run: |
-          validate() {
-            docker run --rm -e CLICKHOUSE_USER=x -e CLICKHOUSE_PASSWORD=x \
-              -e LANGFUSE_OTLP_ENDPOINT=http://langfuse:3000/api/public/otel -e LANGFUSE_AUTH=eA== \
-              -e PHOENIX_OTLP_ENDPOINT=http://phoenix:6006 \
-              -v "$PWD/otel-collector:/cfg:ro" otel/opentelemetry-collector-contrib:0.162.0 validate "$@"
-          }
-          validate --config=/cfg/config.yaml
-          validate --config=/cfg/gateway.yaml
-          for overlay in otel-collector/overlays/*.yaml; do
-            echo "config.yaml + ${overlay##*/}"
-            validate --config=/cfg/config.yaml --config="/cfg/overlays/${overlay##*/}"
-          done
+      - name: Valider les configurations du collector (socle, gateway, surcouches)
+        run: bash tests/e2e/validate_collector.sh
       - name: Démarrer la stack
         run: docker compose up -d --build 2>&1 | tee up.log; exit "${PIPESTATUS[0]}"
       - name: Les données vont de l'agent à ClickHouse
