@@ -21,6 +21,12 @@ AUTH = base64.b64encode(f"admin:{os.getenv('GRAFANA_ADMIN_PASSWORD', 'admin')}".
 DASHBOARD = Path(__file__).resolve().parents[2] / "grafana" / "dashboards" / "sonde-agents.json"
 
 
+def annotate(level: str, message: str) -> None:
+    """GitHub annotation, readable from the run page and the API."""
+    if os.getenv("GITHUB_ACTIONS"):
+        print(f"::{level} title=grafana::{message.replace('%', '%25').replace(chr(10), '%0A')}")
+
+
 def call(path: str, payload: dict | None = None) -> dict:
     request = urllib.request.Request(
         GRAFANA + path,
@@ -59,9 +65,40 @@ def main() -> int:
             rows = sum(len(f.get("data", {}).get("values", [[]])[0] or []) for f in frames if f.get("data"))
             status = "ERROR " + result["error"] if "error" in result else f"{rows} rows"
             print(f"  {panel['title'][:60]:<60} {status}")
-            failures += "error" in result
-    print("OK" if not failures else f"{failures} panel(s) failed")
+            if "error" in result:
+                annotate("error", f"{panel['title']}: {result['error']}")
+                failures += 1
+    failures += check_alert_rules()
+    print("OK" if not failures else f"{failures} check(s) failed")
     return 1 if failures else 0
+
+
+def check_alert_rules() -> int:
+    """Provisioned alert rules exist and evaluate without error."""
+    provisioned = {rule["title"] for rule in call("/api/v1/provisioning/alert-rules")}
+    expected = {"Appels LLM sans tokens", "Spans orphelins", "Conversations fragmentées"}
+    failures = 0
+    if not expected <= provisioned:
+        print(f"  alert rules missing: {sorted(expected - provisioned)}")
+        failures += 1
+
+    rules: list[dict] = []
+    states: list[str] = []
+    for _ in range(45):  # rules are evaluated every minute
+        groups = call("/api/prometheus/grafana/api/v1/rules")["data"]["groups"]
+        rules = [r for g in groups for r in g["rules"] if r["name"] in expected]
+        if len(rules) == len(expected) and all(not r.get("lastEvaluation", "").startswith("0001") for r in rules):
+            break
+        time.sleep(4)
+    for rule in rules:
+        health, state = rule.get("health"), rule.get("state")
+        print(f"  alert {rule['name']:<54} health={health} state={state}")
+        states.append(f"{rule['name']}: health={health} state={state}")
+        if health == "error":
+            annotate("error", f"alerte {rule['name']}: {rule.get('lastError', '')[:500]}")
+            failures += 1
+    annotate("notice", "\n".join(states))
+    return failures
 
 
 if __name__ == "__main__":

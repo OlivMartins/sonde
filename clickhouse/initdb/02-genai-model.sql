@@ -9,7 +9,7 @@
 --               ├─MV──▶ genai_llm_calls    (one row per model call) ──MV──▶ genai_usage_1m
 --               └─MV──▶ genai_tool_calls   (one row per tool call)
 
--- One row per agent run (invoke_agent span) -----------------------------------
+-- One row per agent run (invoke_agent span), sub-agent runs included -----------
 
 CREATE TABLE IF NOT EXISTS otel.genai_agent_runs
 (
@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS otel.genai_agent_runs
     Environment LowCardinality(String),
     AgentName LowCardinality(String),
     AgentVersion LowCardinality(String),
+    ParentAgent LowCardinality(String) COMMENT 'delegating agent for a sub-agent run, empty for a main run',
     ConversationId String CODEC(ZSTD(1)),
     TaskCategory LowCardinality(String),
     RequestModel LowCardinality(String),
@@ -49,6 +50,7 @@ AS SELECT
     ResourceAttributes['deployment.environment.name'] AS Environment,
     SpanAttributes['gen_ai.agent.name'] AS AgentName,
     SpanAttributes['gen_ai.agent.version'] AS AgentVersion,
+    SpanAttributes['sonde.agent.parent'] AS ParentAgent,
     SpanAttributes['gen_ai.conversation.id'] AS ConversationId,
     SpanAttributes['sonde.task.category'] AS TaskCategory,
     SpanAttributes['gen_ai.request.model'] AS RequestModel,

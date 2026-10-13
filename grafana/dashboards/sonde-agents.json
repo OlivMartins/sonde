@@ -1,7 +1,7 @@
 {
   "uid": "sonde-agents",
-  "title": "Sonde — AI agent observability",
-  "description": "OpenTelemetry GenAI traces stored in ClickHouse: cost, quality, reliability and safety of an agent.",
+  "title": "Sonde — observabilité des agents IA",
+  "description": "Traces OpenTelemetry GenAI stockées dans ClickHouse : coût, qualité, fiabilité et sécurité d'un agent.",
   "tags": [
     "genai",
     "opentelemetry",
@@ -26,7 +26,7 @@
       {
         "type": "textbox",
         "name": "trace_id",
-        "label": "Trace ID",
+        "label": "Identifiant de trace",
         "query": "",
         "current": {
           "text": "",
@@ -41,7 +41,7 @@
     {
       "id": 1,
       "type": "row",
-      "title": "Overview",
+      "title": "Vue d'ensemble",
       "collapsed": false,
       "gridPos": {
         "x": 0,
@@ -54,8 +54,8 @@
     {
       "id": 2,
       "type": "stat",
-      "title": "Agent runs",
-      "description": "",
+      "title": "Exécutions de l'agent",
+      "description": "Exécutions principales ; les sous-agents sont comptés dans l'exécution qui les a délégués.",
       "datasource": {
         "type": "grafana-clickhouse-datasource",
         "uid": "clickhouse"
@@ -77,7 +77,7 @@
           "format": 1,
           "queryType": "table",
           "pluginVersion": "4.22.1",
-          "rawSql": "SELECT count() AS runs\nFROM otel.genai_agent_runs\nWHERE $__timeFilter(Timestamp)"
+          "rawSql": "SELECT count() AS runs\nFROM otel.genai_agent_runs\nWHERE ParentAgent = '' AND $__timeFilter(Timestamp)"
         }
       ],
       "fieldConfig": {
@@ -106,8 +106,8 @@
     {
       "id": 3,
       "type": "stat",
-      "title": "Task success rate",
-      "description": "Runs that ended with an answer, excluding loops (max steps) and LLM failures.",
+      "title": "Taux de succès",
+      "description": "Exécutions terminées par une réponse : hors boucles (nombre d'étapes maximal atteint) et échecs du LLM.",
       "datasource": {
         "type": "grafana-clickhouse-datasource",
         "uid": "clickhouse"
@@ -129,7 +129,7 @@
           "format": 1,
           "queryType": "table",
           "pluginVersion": "4.22.1",
-          "rawSql": "SELECT countIf(Outcome = 'completed') / count() AS success\nFROM otel.genai_agent_runs\nWHERE $__timeFilter(Timestamp)"
+          "rawSql": "SELECT countIf(Outcome = 'completed') / count() AS success\nFROM otel.genai_agent_runs\nWHERE ParentAgent = '' AND $__timeFilter(Timestamp)"
         }
       ],
       "fieldConfig": {
@@ -175,7 +175,7 @@
     {
       "id": 4,
       "type": "stat",
-      "title": "p95 run duration",
+      "title": "Durée p95 d'une exécution",
       "description": "",
       "datasource": {
         "type": "grafana-clickhouse-datasource",
@@ -198,7 +198,7 @@
           "format": 1,
           "queryType": "table",
           "pluginVersion": "4.22.1",
-          "rawSql": "SELECT quantile(0.95)(DurationMs) / 1000 AS p95\nFROM otel.genai_agent_runs\nWHERE $__timeFilter(Timestamp)"
+          "rawSql": "SELECT quantile(0.95)(DurationMs) / 1000 AS p95\nFROM otel.genai_agent_runs\nWHERE ParentAgent = '' AND $__timeFilter(Timestamp)"
         }
       ],
       "fieldConfig": {
@@ -228,8 +228,8 @@
     {
       "id": 5,
       "type": "stat",
-      "title": "LLM spend",
-      "description": "Computed in ClickHouse from token usage and the versioned price table (ASOF JOIN).",
+      "title": "Dépense LLM",
+      "description": "Calculée dans ClickHouse à partir des tokens et de la table de prix versionnée (ASOF JOIN).",
       "datasource": {
         "type": "grafana-clickhouse-datasource",
         "uid": "clickhouse"
@@ -281,8 +281,8 @@
     {
       "id": 6,
       "type": "stat",
-      "title": "Prompt cache hit ratio",
-      "description": "Share of input tokens served from the provider's prompt cache (cheaper).",
+      "title": "Taux de cache du prompt",
+      "description": "Part des tokens d'entrée servis par le cache du fournisseur, facturés moins cher.",
       "datasource": {
         "type": "grafana-clickhouse-datasource",
         "uid": "clickhouse"
@@ -334,8 +334,8 @@
     {
       "id": 7,
       "type": "stat",
-      "title": "Blocked tool calls",
-      "description": "Tool calls refused by the allow-list (hallucinated or injected tool names).",
+      "title": "Appels d'outils refusés",
+      "description": "Appels refusés par la liste d'outils autorisés : nom halluciné ou injecté.",
       "datasource": {
         "type": "grafana-clickhouse-datasource",
         "uid": "clickhouse"
@@ -398,7 +398,7 @@
     {
       "id": 8,
       "type": "row",
-      "title": "Cost & A/B test",
+      "title": "Coût et test A/B",
       "collapsed": false,
       "gridPos": {
         "x": 0,
@@ -411,7 +411,7 @@
     {
       "id": 9,
       "type": "timeseries",
-      "title": "LLM spend per agent version",
+      "title": "Dépense LLM par agent et version",
       "description": "",
       "datasource": {
         "type": "grafana-clickhouse-datasource",
@@ -434,14 +434,14 @@
           "format": 0,
           "queryType": "timeseries",
           "pluginVersion": "4.22.1",
-          "rawSql": "SELECT $__timeInterval(Minute) AS time, AgentVersion, sum(CostUsd) AS cost\nFROM otel.genai_cost_1m\nWHERE $__timeFilter(Minute)\nGROUP BY time, AgentVersion\nORDER BY time"
+          "rawSql": "SELECT $__timeInterval(Minute) AS time, concat(AgentName, ' ', AgentVersion) AS agent, sum(CostUsd) AS cost\nFROM otel.genai_cost_1m\nWHERE $__timeFilter(Minute)\nGROUP BY time, agent\nORDER BY time"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "currencyUSD",
           "decimals": 3,
-          "displayName": "${__field.labels.AgentVersion}",
+          "displayName": "${__field.labels.agent}",
           "custom": {
             "drawStyle": "bars",
             "fillOpacity": 70,
@@ -469,8 +469,8 @@
     {
       "id": 10,
       "type": "table",
-      "title": "A/B test: quality vs cost per agent version",
-      "description": "Is the cheaper v2 worth it? Cost per successful task is the number that matters.",
+      "title": "Test A/B : qualité et coût par version",
+      "description": "La v2, moins chère, vaut-elle le coup ? Le coût par tâche réussie tranche. Le coût d'une exécution inclut ses sous-agents, tant que le contexte de trace est propagé.",
       "datasource": {
         "type": "grafana-clickhouse-datasource",
         "uid": "clickhouse"
@@ -492,7 +492,7 @@
           "format": 1,
           "queryType": "table",
           "pluginVersion": "4.22.1",
-          "rawSql": "SELECT\n    r.AgentVersion AS version,\n    any(r.RequestModel) AS model,\n    count() AS runs,\n    countIf(r.Outcome = 'completed') / count() AS success,\n    countIf(r.Feedback = 1) / nullIf(countIf(r.Feedback != 0), 0) AS thumbs_up,\n    avg(r.Steps) AS avg_steps,\n    quantile(0.95)(r.DurationMs) / 1000 AS p95_s,\n    sum(c.CostUsd) / count() AS usd_per_run,\n    sum(c.CostUsd) / nullIf(countIf(r.Outcome = 'completed'), 0) AS usd_per_success\nFROM otel.genai_agent_runs AS r\nLEFT JOIN\n(\n    SELECT TraceId, sum(CostUsd) AS CostUsd\n    FROM otel.genai_llm_calls_priced\n    WHERE $__timeFilter(Timestamp)\n    GROUP BY TraceId\n) AS c ON r.TraceId = c.TraceId\nWHERE $__timeFilter(r.Timestamp)\nGROUP BY version\nORDER BY version"
+          "rawSql": "SELECT\n    r.AgentVersion AS version,\n    any(r.RequestModel) AS model,\n    count() AS runs,\n    countIf(r.Outcome = 'completed') / count() AS success,\n    countIf(r.Feedback = 1) / nullIf(countIf(r.Feedback != 0), 0) AS thumbs_up,\n    avg(r.Steps) AS avg_steps,\n    quantile(0.95)(r.DurationMs) / 1000 AS p95_s,\n    sum(c.CostUsd) / count() AS usd_per_run,\n    sum(c.CostUsd) / nullIf(countIf(r.Outcome = 'completed'), 0) AS usd_per_success\nFROM otel.genai_agent_runs AS r\nLEFT JOIN\n(\n    SELECT TraceId, sum(CostUsd) AS CostUsd\n    FROM otel.genai_llm_calls_priced\n    WHERE $__timeFilter(Timestamp)\n    GROUP BY TraceId\n) AS c ON r.TraceId = c.TraceId\nWHERE r.ParentAgent = '' AND $__timeFilter(r.Timestamp)\nGROUP BY version\nORDER BY version"
         }
       ],
       "fieldConfig": {
@@ -552,7 +552,7 @@
     {
       "id": 11,
       "type": "timeseries",
-      "title": "Tokens per interval",
+      "title": "Tokens par intervalle",
       "description": "",
       "datasource": {
         "type": "grafana-clickhouse-datasource",
@@ -575,7 +575,7 @@
           "format": 0,
           "queryType": "timeseries",
           "pluginVersion": "4.22.1",
-          "rawSql": "SELECT\n    $__timeInterval(Minute) AS time,\n    sum(InputTokens) - sum(CacheReadTokens) AS \"input (uncached)\",\n    sum(CacheReadTokens) AS \"input (cache read)\",\n    sum(OutputTokens) AS \"output\"\nFROM otel.genai_usage_1m\nWHERE $__timeFilter(Minute)\nGROUP BY time\nORDER BY time"
+          "rawSql": "SELECT\n    $__timeInterval(Minute) AS time,\n    sum(InputTokens) - sum(CacheReadTokens) AS \"entrée (hors cache)\",\n    sum(CacheReadTokens) AS \"entrée (cache)\",\n    sum(OutputTokens) AS \"sortie\"\nFROM otel.genai_usage_1m\nWHERE $__timeFilter(Minute)\nGROUP BY time\nORDER BY time"
         }
       ],
       "fieldConfig": {
@@ -608,8 +608,8 @@
     {
       "id": 12,
       "type": "barchart",
-      "title": "Context growth: average input tokens per agent step",
-      "description": "Every tool result is appended to the prompt: long loops get expensive fast.",
+      "title": "Croissance du contexte : tokens d'entrée moyens par étape",
+      "description": "Chaque résultat d'outil s'ajoute au prompt : une boucle longue devient vite chère.",
       "datasource": {
         "type": "grafana-clickhouse-datasource",
         "uid": "clickhouse"
@@ -631,7 +631,7 @@
           "format": 1,
           "queryType": "table",
           "pluginVersion": "4.22.1",
-          "rawSql": "SELECT\n    toString(Step) AS step,\n    round(avgIf(InputTokens, AgentVersion = 'v1')) AS v1,\n    round(avgIf(InputTokens, AgentVersion = 'v2')) AS v2\nFROM otel.genai_llm_calls\nWHERE $__timeFilter(Timestamp)\nGROUP BY Step\nORDER BY Step"
+          "rawSql": "SELECT\n    toString(Step) AS step,\n    round(avgIf(InputTokens, AgentVersion = 'v1')) AS v1,\n    round(avgIf(InputTokens, AgentVersion = 'v2')) AS v2\nFROM otel.genai_llm_calls\nWHERE AgentName = 'sre-copilot' AND $__timeFilter(Timestamp)\nGROUP BY Step\nORDER BY Step"
         }
       ],
       "fieldConfig": {
@@ -660,7 +660,7 @@
     {
       "id": 13,
       "type": "row",
-      "title": "Reliability",
+      "title": "Fiabilité",
       "collapsed": false,
       "gridPos": {
         "x": 0,
@@ -673,7 +673,7 @@
     {
       "id": 14,
       "type": "timeseries",
-      "title": "Agent runs by outcome",
+      "title": "Exécutions par issue",
       "description": "",
       "datasource": {
         "type": "grafana-clickhouse-datasource",
@@ -696,7 +696,7 @@
           "format": 0,
           "queryType": "timeseries",
           "pluginVersion": "4.22.1",
-          "rawSql": "SELECT $__timeInterval(Timestamp) AS time, Outcome, count() AS runs\nFROM otel.genai_agent_runs\nWHERE $__timeFilter(Timestamp)\nGROUP BY time, Outcome\nORDER BY time"
+          "rawSql": "SELECT $__timeInterval(Timestamp) AS time, Outcome, count() AS runs\nFROM otel.genai_agent_runs\nWHERE ParentAgent = '' AND $__timeFilter(Timestamp)\nGROUP BY time, Outcome\nORDER BY time"
         }
       ],
       "fieldConfig": {
@@ -776,7 +776,7 @@
     {
       "id": 15,
       "type": "timeseries",
-      "title": "LLM latency by model (p50 / p95)",
+      "title": "Latence du LLM par modèle (p50 / p95)",
       "description": "",
       "datasource": {
         "type": "grafana-clickhouse-datasource",
@@ -830,8 +830,8 @@
     {
       "id": 16,
       "type": "table",
-      "title": "Outcomes by task category",
-      "description": "Vague requests make the agent wander until it hits max steps.",
+      "title": "Issues par catégorie de tâche",
+      "description": "Les demandes vagues font tourner l'agent en rond jusqu'au nombre d'étapes maximal.",
       "datasource": {
         "type": "grafana-clickhouse-datasource",
         "uid": "clickhouse"
@@ -853,7 +853,7 @@
           "format": 1,
           "queryType": "table",
           "pluginVersion": "4.22.1",
-          "rawSql": "SELECT\n    TaskCategory AS category,\n    count() AS runs,\n    countIf(Outcome = 'completed') / count() AS success,\n    countIf(Outcome = 'max_steps_exceeded') AS loops,\n    avg(Steps) AS avg_steps\nFROM otel.genai_agent_runs\nWHERE $__timeFilter(Timestamp)\nGROUP BY category\nORDER BY success"
+          "rawSql": "SELECT\n    TaskCategory AS category,\n    count() AS runs,\n    countIf(Outcome = 'completed') / count() AS success,\n    countIf(Outcome = 'max_steps_exceeded') AS loops,\n    avg(Steps) AS avg_steps\nFROM otel.genai_agent_runs\nWHERE ParentAgent = '' AND $__timeFilter(Timestamp)\nGROUP BY category\nORDER BY success"
         }
       ],
       "fieldConfig": {
@@ -897,8 +897,8 @@
     {
       "id": 17,
       "type": "timeseries",
-      "title": "Rate limits: retries and failed LLM calls",
-      "description": "Try: curl -X POST localhost:8080/admin/faults -d '{\"rate_limit_rate\": 0.4}'",
+      "title": "Limites de débit : tentatives et appels LLM en échec",
+      "description": "Essayez : curl -X POST localhost:8080/admin/faults -d '{\"rate_limit_rate\": 0.4}'",
       "datasource": {
         "type": "grafana-clickhouse-datasource",
         "uid": "clickhouse"
@@ -920,7 +920,7 @@
           "format": 0,
           "queryType": "timeseries",
           "pluginVersion": "4.22.1",
-          "rawSql": "SELECT $__timeInterval(Minute) AS time, sum(Retries) AS retries, sum(Errors) AS \"failed calls\"\nFROM otel.genai_usage_1m\nWHERE $__timeFilter(Minute)\nGROUP BY time\nORDER BY time"
+          "rawSql": "SELECT $__timeInterval(Minute) AS time, sum(Retries) AS \"nouvelles tentatives\", sum(Errors) AS \"appels en échec\"\nFROM otel.genai_usage_1m\nWHERE $__timeFilter(Minute)\nGROUP BY time\nORDER BY time"
         }
       ],
       "fieldConfig": {
@@ -953,7 +953,7 @@
     {
       "id": 18,
       "type": "row",
-      "title": "Tools & security",
+      "title": "Outils et sécurité",
       "collapsed": false,
       "gridPos": {
         "x": 0,
@@ -966,7 +966,7 @@
     {
       "id": 19,
       "type": "table",
-      "title": "Tool calls",
+      "title": "Appels d'outils",
       "description": "",
       "datasource": {
         "type": "grafana-clickhouse-datasource",
@@ -1037,8 +1037,8 @@
     {
       "id": 20,
       "type": "timeseries",
-      "title": "Secrets and PII masked by the collector",
-      "description": "E-mails, API keys and bearer tokens found in prompts and tool results, masked before storage.",
+      "title": "Secrets et données personnelles masqués",
+      "description": "E-mails, clés d'API et jetons trouvés dans les prompts et résultats d'outils, masqués avant stockage. Les regex ne voient que des formats connus : voir les limites dans docs/ARCHITECTURE.md.",
       "datasource": {
         "type": "grafana-clickhouse-datasource",
         "uid": "clickhouse"
@@ -1060,7 +1060,7 @@
           "format": 0,
           "queryType": "timeseries",
           "pluginVersion": "4.22.1",
-          "rawSql": "SELECT $__timeInterval(Timestamp) AS time, sum(toUInt64OrZero(SpanAttributes['redaction.masked.count'])) AS \"masked values\"\nFROM otel.otel_traces\nWHERE $__timeFilter(Timestamp)\nGROUP BY time\nORDER BY time"
+          "rawSql": "SELECT $__timeInterval(Timestamp) AS time, sum(toUInt64OrZero(SpanAttributes['redaction.masked.count'])) AS \"valeurs masquées\"\nFROM otel.otel_traces\nWHERE $__timeFilter(Timestamp)\nGROUP BY time\nORDER BY time"
         }
       ],
       "fieldConfig": {
@@ -1093,7 +1093,7 @@
     {
       "id": 21,
       "type": "table",
-      "title": "Blocked tool attempts",
+      "title": "Tentatives d'outils refusées",
       "description": "",
       "datasource": {
         "type": "grafana-clickhouse-datasource",
@@ -1132,7 +1132,7 @@
                 "id": "links",
                 "value": [
                   {
-                    "title": "Open this trace below",
+                    "title": "Ouvrir cette trace plus bas",
                     "url": "/d/sonde-agents?${__url_time_range}&var-trace_id=${__value.raw}"
                   }
                 ]
@@ -1149,7 +1149,7 @@
     {
       "id": 22,
       "type": "row",
-      "title": "Investigate",
+      "title": "Qualité des données",
       "collapsed": false,
       "gridPos": {
         "x": 0,
@@ -1161,9 +1161,9 @@
     },
     {
       "id": 23,
-      "type": "table",
-      "title": "Most expensive runs (click a trace id)",
-      "description": "",
+      "type": "stat",
+      "title": "Appels LLM sans tokens",
+      "description": "Appels réussis sans usage de tokens : signe d'un attribut renommé ou d'une instrumentation qui ne suit pas les conventions. Le coût affiché est alors faux, sans aucune erreur.",
       "datasource": {
         "type": "grafana-clickhouse-datasource",
         "uid": "clickhouse"
@@ -1171,6 +1171,441 @@
       "gridPos": {
         "x": 0,
         "y": 49,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "pluginVersion": "4.22.1",
+          "rawSql": "SELECT countIf(InputTokens = 0 AND StatusCode != 'Error') / count() AS ratio\nFROM otel.genai_llm_calls\nWHERE $__timeFilter(Timestamp)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.01
+              },
+              {
+                "color": "red",
+                "value": 0.05
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 24,
+      "type": "stat",
+      "title": "Spans GenAI sans agent",
+      "description": "Appels LLM ou outils impossibles à attribuer à un agent : ils échappent au test A/B.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 4,
+        "y": 49,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "pluginVersion": "4.22.1",
+          "rawSql": "SELECT countIf(SpanAttributes['gen_ai.agent.name'] = '') / count() AS ratio\nFROM otel.otel_traces\nWHERE SpanAttributes['gen_ai.operation.name'] IN ('chat', 'execute_tool') AND $__timeFilter(Timestamp)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.01
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 25,
+      "type": "stat",
+      "title": "Spans orphelins",
+      "description": "Spans dont le parent n'est jamais arrivé : export perdu, plantage, échantillonnage incohérent. Les 2 dernières minutes sont ignorées, le temps que les spans parents se terminent.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 49,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "pluginVersion": "4.22.1",
+          "rawSql": "SELECT count() AS orphans\nFROM otel.otel_traces\nWHERE $__timeFilter(Timestamp)\n  AND Timestamp <= $__toTime - INTERVAL 2 MINUTE\n  AND ParentSpanId != ''\n  AND (TraceId, ParentSpanId) NOT IN\n  (\n      SELECT TraceId, SpanId\n      FROM otel.otel_traces\n      WHERE Timestamp >= $__fromTime - INTERVAL 1 HOUR AND Timestamp <= $__toTime\n  )"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 26,
+      "type": "stat",
+      "title": "Conversations fragmentées",
+      "description": "Une même conversation répartie sur plusieurs traces : le contexte n'a pas suivi un sous-agent lancé dans un thread. Son coût n'est plus rattaché à l'exécution qui l'a délégué.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 49,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "pluginVersion": "4.22.1",
+          "rawSql": "SELECT count() AS conversations\nFROM\n(\n    SELECT ConversationId, min(Timestamp) AS first_seen\n    FROM otel.genai_agent_runs\n    WHERE ConversationId != '' AND $__timeFilter(Timestamp)\n    GROUP BY ConversationId\n    HAVING uniqExact(TraceId) > 1\n)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 27,
+      "type": "stat",
+      "title": "Attributs hérités renommés",
+      "description": "Spans dont le collector a converti des noms d'attributs anciens ou tiers vers les conventions actuelles.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 49,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "pluginVersion": "4.22.1",
+          "rawSql": "SELECT countIf(mapContains(SpanAttributes, 'sonde.semconv.legacy')) AS spans\nFROM otel.otel_traces\nWHERE $__timeFilter(Timestamp)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 28,
+      "type": "stat",
+      "title": "Attributs supprimés",
+      "description": "Attributs écartés par la liste blanche du collector. Une hausse signale une nouvelle instrumentation à examiner.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 20,
+        "y": 49,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "pluginVersion": "4.22.1",
+          "rawSql": "SELECT sum(toUInt64OrZero(SpanAttributes['redaction.redacted.count'])) AS dropped\nFROM otel.otel_traces\nWHERE $__timeFilter(Timestamp)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 29,
+      "type": "table",
+      "title": "Conversations fragmentées : traces à recoller",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 53,
+        "w": 24,
+        "h": 7
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "pluginVersion": "4.22.1",
+          "rawSql": "SELECT\n    min(Timestamp) AS time,\n    ConversationId AS conversation,\n    uniqExact(TraceId) AS traces,\n    groupUniqArray(AgentName) AS agents,\n    argMinIf(TraceId, Timestamp, ParentAgent = '') AS main_trace,\n    arrayFilter(t -> t != main_trace, groupUniqArray(TraceId))[1] AS detached_trace\nFROM otel.genai_agent_runs\nWHERE ConversationId != '' AND $__timeFilter(Timestamp)\nGROUP BY ConversationId\nHAVING traces > 1\nORDER BY time DESC\nLIMIT 50"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "main_trace|detached_trace"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Ouvrir cette trace plus bas",
+                    "url": "/d/sonde-agents?${__url_time_range}&var-trace_id=${__value.raw}"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 30,
+      "type": "row",
+      "title": "Investigation",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 60,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 31,
+      "type": "table",
+      "title": "Exécutions les plus chères (cliquez un identifiant de trace)",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 61,
         "w": 24,
         "h": 8
       },
@@ -1185,7 +1620,7 @@
           "format": 1,
           "queryType": "table",
           "pluginVersion": "4.22.1",
-          "rawSql": "SELECT\n    r.Timestamp AS time,\n    r.AgentVersion AS version,\n    r.TaskCategory AS category,\n    r.Outcome AS outcome,\n    r.Steps AS steps,\n    r.InputTokens + r.OutputTokens AS tokens,\n    c.CostUsd AS cost,\n    r.DurationMs / 1000 AS duration,\n    r.TraceId AS trace_id\nFROM otel.genai_agent_runs AS r\nINNER JOIN\n(\n    SELECT TraceId, sum(CostUsd) AS CostUsd\n    FROM otel.genai_llm_calls_priced\n    WHERE $__timeFilter(Timestamp)\n    GROUP BY TraceId\n) AS c ON r.TraceId = c.TraceId\nWHERE $__timeFilter(r.Timestamp)\nORDER BY c.CostUsd DESC\nLIMIT 20"
+          "rawSql": "SELECT\n    r.Timestamp AS time,\n    r.AgentVersion AS version,\n    r.TaskCategory AS category,\n    r.Outcome AS outcome,\n    r.Steps AS steps,\n    r.InputTokens + r.OutputTokens AS tokens,\n    c.CostUsd AS cost,\n    r.DurationMs / 1000 AS duration,\n    r.TraceId AS trace_id\nFROM otel.genai_agent_runs AS r\nINNER JOIN\n(\n    SELECT TraceId, sum(CostUsd) AS CostUsd\n    FROM otel.genai_llm_calls_priced\n    WHERE $__timeFilter(Timestamp)\n    GROUP BY TraceId\n) AS c ON r.TraceId = c.TraceId\nWHERE r.ParentAgent = '' AND $__timeFilter(r.Timestamp)\nORDER BY c.CostUsd DESC\nLIMIT 20"
         }
       ],
       "fieldConfig": {
@@ -1201,7 +1636,7 @@
                 "id": "links",
                 "value": [
                   {
-                    "title": "Open this trace below",
+                    "title": "Ouvrir cette trace plus bas",
                     "url": "/d/sonde-agents?${__url_time_range}&var-trace_id=${__value.raw}"
                   }
                 ]
@@ -1248,9 +1683,9 @@
       }
     },
     {
-      "id": 24,
+      "id": 32,
       "type": "traces",
-      "title": "Trace explorer (latest run, or the trace id you clicked above)",
+      "title": "Trace (dernière exécution, ou celle que vous avez cliquée)",
       "description": "",
       "datasource": {
         "type": "grafana-clickhouse-datasource",
@@ -1258,7 +1693,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 57,
+        "y": 69,
         "w": 24,
         "h": 16
       },

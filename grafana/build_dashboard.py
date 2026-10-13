@@ -1,4 +1,4 @@
-"""Dashboard as code: generates grafana/dashboards/sonde-agents.json.
+"""Dashboard as code: generates grafana/dashboards/sonde-agents.json and the alert rules.
 
     python grafana/build_dashboard.py
 
@@ -130,39 +130,43 @@ LEGEND = {
 
 TRACE_LINK = [
     {
-        "title": "Open this trace below",
+        "title": "Ouvrir cette trace plus bas",
         "url": "/d/sonde-agents?${__url_time_range}&var-trace_id=${__value.raw}",
     }
 ]
 
 panels: list[dict] = []
 
-# --- Overview ------------------------------------------------------------------
-panels.append(row("Overview", 0))
+# Run-level panels only count main runs: sub-agent runs are part of their parent's run.
+MAIN = "ParentAgent = ''"
+
+# --- Vue d'ensemble -------------------------------------------------------------
+panels.append(row("Vue d'ensemble", 0))
 panels += [
     stat(
-        "Agent runs",
-        """
+        "Exécutions de l'agent",
+        f"""
 SELECT count() AS runs
 FROM otel.genai_agent_runs
-WHERE $__timeFilter(Timestamp)
+WHERE {MAIN} AND $__timeFilter(Timestamp)
 """,
         0,
         1,
         unit="short",
+        description="Exécutions principales ; les sous-agents sont comptés dans l'exécution qui les a délégués.",
     ),
     stat(
-        "Task success rate",
-        """
+        "Taux de succès",
+        f"""
 SELECT countIf(Outcome = 'completed') / count() AS success
 FROM otel.genai_agent_runs
-WHERE $__timeFilter(Timestamp)
+WHERE {MAIN} AND $__timeFilter(Timestamp)
 """,
         4,
         1,
         unit="percentunit",
         decimals=1,
-        description="Runs that ended with an answer, excluding loops (max steps) and LLM failures.",
+        description="Exécutions terminées par une réponse : hors boucles (nombre d'étapes maximal atteint) et échecs du LLM.",
         thresholds=[
             {"color": "red", "value": None},
             {"color": "orange", "value": 0.8},
@@ -170,11 +174,11 @@ WHERE $__timeFilter(Timestamp)
         ],
     ),
     stat(
-        "p95 run duration",
-        """
+        "Durée p95 d'une exécution",
+        f"""
 SELECT quantile(0.95)(DurationMs) / 1000 AS p95
 FROM otel.genai_agent_runs
-WHERE $__timeFilter(Timestamp)
+WHERE {MAIN} AND $__timeFilter(Timestamp)
 """,
         8,
         1,
@@ -182,7 +186,7 @@ WHERE $__timeFilter(Timestamp)
         decimals=1,
     ),
     stat(
-        "LLM spend",
+        "Dépense LLM",
         """
 SELECT sum(CostUsd) AS spend
 FROM otel.genai_cost_1m
@@ -192,10 +196,10 @@ WHERE $__timeFilter(Minute)
         1,
         unit="currencyUSD",
         decimals=2,
-        description="Computed in ClickHouse from token usage and the versioned price table (ASOF JOIN).",
+        description="Calculée dans ClickHouse à partir des tokens et de la table de prix versionnée (ASOF JOIN).",
     ),
     stat(
-        "Prompt cache hit ratio",
+        "Taux de cache du prompt",
         """
 SELECT sum(CacheReadTokens) / sum(InputTokens) AS ratio
 FROM otel.genai_usage_1m
@@ -205,10 +209,10 @@ WHERE $__timeFilter(Minute)
         1,
         unit="percentunit",
         decimals=1,
-        description="Share of input tokens served from the provider's prompt cache (cheaper).",
+        description="Part des tokens d'entrée servis par le cache du fournisseur, facturés moins cher.",
     ),
     stat(
-        "Blocked tool calls",
+        "Appels d'outils refusés",
         """
 SELECT count() AS blocked
 FROM otel.genai_tool_calls
@@ -217,36 +221,36 @@ WHERE Blocked = 1 AND $__timeFilter(Timestamp)
         20,
         1,
         unit="short",
-        description="Tool calls refused by the allow-list (hallucinated or injected tool names).",
+        description="Appels refusés par la liste d'outils autorisés : nom halluciné ou injecté.",
         thresholds=[{"color": "green", "value": None}, {"color": "orange", "value": 1}],
     ),
 ]
 
-# --- Cost & A/B test -------------------------------------------------------------
-panels.append(row("Cost & A/B test", 5))
+# --- Coût et test A/B ------------------------------------------------------------
+panels.append(row("Coût et test A/B", 5))
 panels += [
     panel(
         "timeseries",
-        "LLM spend per agent version",
+        "Dépense LLM par agent et version",
         """
-SELECT $__timeInterval(Minute) AS time, AgentVersion, sum(CostUsd) AS cost
+SELECT $__timeInterval(Minute) AS time, concat(AgentName, ' ', AgentVersion) AS agent, sum(CostUsd) AS cost
 FROM otel.genai_cost_1m
 WHERE $__timeFilter(Minute)
-GROUP BY time, AgentVersion
+GROUP BY time, agent
 ORDER BY time
 """,
         FORMAT_TIMESERIES,
         (0, 6, 12, 8),
         unit="currencyUSD",
         decimals=3,
-        display_name="${__field.labels.AgentVersion}",
+        display_name="${__field.labels.agent}",
         custom=TIMESERIES_BARS,
         options=LEGEND,
     ),
     panel(
         "table",
-        "A/B test: quality vs cost per agent version",
-        """
+        "Test A/B : qualité et coût par version",
+        f"""
 SELECT
     r.AgentVersion AS version,
     any(r.RequestModel) AS model,
@@ -265,13 +269,16 @@ LEFT JOIN
     WHERE $__timeFilter(Timestamp)
     GROUP BY TraceId
 ) AS c ON r.TraceId = c.TraceId
-WHERE $__timeFilter(r.Timestamp)
+WHERE r.{MAIN} AND $__timeFilter(r.Timestamp)
 GROUP BY version
 ORDER BY version
 """,
         FORMAT_TABLE,
         (12, 6, 12, 8),
-        description="Is the cheaper v2 worth it? Cost per successful task is the number that matters.",
+        description=(
+            "La v2, moins chère, vaut-elle le coup ? Le coût par tâche réussie tranche. Le coût d'une exécution "
+            "inclut ses sous-agents, tant que le contexte de trace est propagé."
+        ),
         options={"showHeader": True, "cellHeight": "sm"},
         overrides=[
             {
@@ -290,13 +297,13 @@ ORDER BY version
     ),
     panel(
         "timeseries",
-        "Tokens per interval",
+        "Tokens par intervalle",
         """
 SELECT
     $__timeInterval(Minute) AS time,
-    sum(InputTokens) - sum(CacheReadTokens) AS "input (uncached)",
-    sum(CacheReadTokens) AS "input (cache read)",
-    sum(OutputTokens) AS "output"
+    sum(InputTokens) - sum(CacheReadTokens) AS "entrée (hors cache)",
+    sum(CacheReadTokens) AS "entrée (cache)",
+    sum(OutputTokens) AS "sortie"
 FROM otel.genai_usage_1m
 WHERE $__timeFilter(Minute)
 GROUP BY time
@@ -310,21 +317,21 @@ ORDER BY time
     ),
     panel(
         "barchart",
-        "Context growth: average input tokens per agent step",
+        "Croissance du contexte : tokens d'entrée moyens par étape",
         """
 SELECT
     toString(Step) AS step,
     round(avgIf(InputTokens, AgentVersion = 'v1')) AS v1,
     round(avgIf(InputTokens, AgentVersion = 'v2')) AS v2
 FROM otel.genai_llm_calls
-WHERE $__timeFilter(Timestamp)
+WHERE AgentName = 'sre-copilot' AND $__timeFilter(Timestamp)
 GROUP BY Step
 ORDER BY Step
 """,
         FORMAT_TABLE,
         (12, 14, 12, 8),
         unit="short",
-        description="Every tool result is appended to the prompt: long loops get expensive fast.",
+        description="Chaque résultat d'outil s'ajoute au prompt : une boucle longue devient vite chère.",
         options={
             "xField": "step",
             "orientation": "vertical",
@@ -336,16 +343,16 @@ ORDER BY Step
     ),
 ]
 
-# --- Reliability -------------------------------------------------------------------
-panels.append(row("Reliability", 22))
+# --- Fiabilité -------------------------------------------------------------------
+panels.append(row("Fiabilité", 22))
 panels += [
     panel(
         "timeseries",
-        "Agent runs by outcome",
-        """
+        "Exécutions par issue",
+        f"""
 SELECT $__timeInterval(Timestamp) AS time, Outcome, count() AS runs
 FROM otel.genai_agent_runs
-WHERE $__timeFilter(Timestamp)
+WHERE {MAIN} AND $__timeFilter(Timestamp)
 GROUP BY time, Outcome
 ORDER BY time
 """,
@@ -372,7 +379,7 @@ ORDER BY time
     ),
     panel(
         "timeseries",
-        "LLM latency by model (p50 / p95)",
+        "Latence du LLM par modèle (p50 / p95)",
         """
 SELECT
     $__timeInterval(Minute) AS time,
@@ -393,8 +400,8 @@ ORDER BY time
     ),
     panel(
         "table",
-        "Outcomes by task category",
-        """
+        "Issues par catégorie de tâche",
+        f"""
 SELECT
     TaskCategory AS category,
     count() AS runs,
@@ -402,13 +409,13 @@ SELECT
     countIf(Outcome = 'max_steps_exceeded') AS loops,
     avg(Steps) AS avg_steps
 FROM otel.genai_agent_runs
-WHERE $__timeFilter(Timestamp)
+WHERE {MAIN} AND $__timeFilter(Timestamp)
 GROUP BY category
 ORDER BY success
 """,
         FORMAT_TABLE,
         (0, 31, 12, 8),
-        description="Vague requests make the agent wander until it hits max steps.",
+        description="Les demandes vagues font tourner l'agent en rond jusqu'au nombre d'étapes maximal.",
         options={"showHeader": True, "cellHeight": "sm"},
         overrides=[
             {
@@ -420,9 +427,9 @@ ORDER BY success
     ),
     panel(
         "timeseries",
-        "Rate limits: retries and failed LLM calls",
+        "Limites de débit : tentatives et appels LLM en échec",
         """
-SELECT $__timeInterval(Minute) AS time, sum(Retries) AS retries, sum(Errors) AS "failed calls"
+SELECT $__timeInterval(Minute) AS time, sum(Retries) AS "nouvelles tentatives", sum(Errors) AS "appels en échec"
 FROM otel.genai_usage_1m
 WHERE $__timeFilter(Minute)
 GROUP BY time
@@ -433,16 +440,16 @@ ORDER BY time
         unit="short",
         custom=TIMESERIES_BARS,
         options=LEGEND,
-        description="Try: curl -X POST localhost:8080/admin/faults -d '{\"rate_limit_rate\": 0.4}'",
+        description="Essayez : curl -X POST localhost:8080/admin/faults -d '{\"rate_limit_rate\": 0.4}'",
     ),
 ]
 
-# --- Tools & security ------------------------------------------------------------------
-panels.append(row("Tools & security", 39))
+# --- Outils et sécurité -------------------------------------------------------------
+panels.append(row("Outils et sécurité", 39))
 panels += [
     panel(
         "table",
-        "Tool calls",
+        "Appels d'outils",
         """
 SELECT
     ToolName AS tool,
@@ -472,9 +479,9 @@ ORDER BY calls DESC
     ),
     panel(
         "timeseries",
-        "Secrets and PII masked by the collector",
+        "Secrets et données personnelles masqués",
         """
-SELECT $__timeInterval(Timestamp) AS time, sum(toUInt64OrZero(SpanAttributes['redaction.masked.count'])) AS "masked values"
+SELECT $__timeInterval(Timestamp) AS time, sum(toUInt64OrZero(SpanAttributes['redaction.masked.count'])) AS "valeurs masquées"
 FROM otel.otel_traces
 WHERE $__timeFilter(Timestamp)
 GROUP BY time
@@ -485,11 +492,14 @@ ORDER BY time
         unit="short",
         custom=TIMESERIES_BARS,
         options=LEGEND,
-        description="E-mails, API keys and bearer tokens found in prompts and tool results, masked before storage.",
+        description=(
+            "E-mails, clés d'API et jetons trouvés dans les prompts et résultats d'outils, masqués avant stockage. "
+            "Les regex ne voient que des formats connus : voir les limites dans docs/ARCHITECTURE.md."
+        ),
     ),
     panel(
         "table",
-        "Blocked tool attempts",
+        "Tentatives d'outils refusées",
         """
 SELECT Timestamp AS time, AgentVersion AS version, ToolName AS tool, TraceId AS trace_id
 FROM otel.genai_tool_calls
@@ -506,13 +516,158 @@ LIMIT 50
     ),
 ]
 
-# --- Investigate ------------------------------------------------------------------------
-panels.append(row("Investigate", 48))
+# --- Qualité des données ------------------------------------------------------------
+# A wrong dashboard is worse than a broken one: these panels catch silent failures.
+ORPHAN_FILTER = """
+WHERE $__timeFilter(Timestamp)
+  AND Timestamp <= $__toTime - INTERVAL 2 MINUTE
+  AND ParentSpanId != ''
+  AND (TraceId, ParentSpanId) NOT IN
+  (
+      SELECT TraceId, SpanId
+      FROM otel.otel_traces
+      WHERE Timestamp >= $__fromTime - INTERVAL 1 HOUR AND Timestamp <= $__toTime
+  )"""
+FRAGMENTED_CONVERSATIONS = """
+    SELECT ConversationId, min(Timestamp) AS first_seen
+    FROM otel.genai_agent_runs
+    WHERE ConversationId != '' AND $__timeFilter(Timestamp)
+    GROUP BY ConversationId
+    HAVING uniqExact(TraceId) > 1"""
+ORPHANS = f"""
+SELECT count() AS orphans
+FROM otel.otel_traces{ORPHAN_FILTER}
+"""
+FRAGMENTED = f"""
+SELECT count() AS conversations
+FROM
+({FRAGMENTED_CONVERSATIONS}
+)
+"""
+ZERO_GOOD = [{"color": "green", "value": None}, {"color": "orange", "value": 1}]
+
+panels.append(row("Qualité des données", 48))
+panels += [
+    stat(
+        "Appels LLM sans tokens",
+        """
+SELECT countIf(InputTokens = 0 AND StatusCode != 'Error') / count() AS ratio
+FROM otel.genai_llm_calls
+WHERE $__timeFilter(Timestamp)
+""",
+        0,
+        49,
+        unit="percentunit",
+        decimals=1,
+        description=(
+            "Appels réussis sans usage de tokens : signe d'un attribut renommé ou d'une instrumentation "
+            "qui ne suit pas les conventions. Le coût affiché est alors faux, sans aucune erreur."
+        ),
+        thresholds=[
+            {"color": "green", "value": None},
+            {"color": "orange", "value": 0.01},
+            {"color": "red", "value": 0.05},
+        ],
+    ),
+    stat(
+        "Spans GenAI sans agent",
+        """
+SELECT countIf(SpanAttributes['gen_ai.agent.name'] = '') / count() AS ratio
+FROM otel.otel_traces
+WHERE SpanAttributes['gen_ai.operation.name'] IN ('chat', 'execute_tool') AND $__timeFilter(Timestamp)
+""",
+        4,
+        49,
+        unit="percentunit",
+        decimals=1,
+        description="Appels LLM ou outils impossibles à attribuer à un agent : ils échappent au test A/B.",
+        thresholds=[{"color": "green", "value": None}, {"color": "orange", "value": 0.01}],
+    ),
+    stat(
+        "Spans orphelins",
+        ORPHANS,
+        8,
+        49,
+        unit="short",
+        description=(
+            "Spans dont le parent n'est jamais arrivé : export perdu, plantage, échantillonnage incohérent. "
+            "Les 2 dernières minutes sont ignorées, le temps que les spans parents se terminent."
+        ),
+        thresholds=ZERO_GOOD,
+    ),
+    stat(
+        "Conversations fragmentées",
+        FRAGMENTED,
+        12,
+        49,
+        unit="short",
+        description=(
+            "Une même conversation répartie sur plusieurs traces : le contexte n'a pas suivi un sous-agent "
+            "lancé dans un thread. Son coût n'est plus rattaché à l'exécution qui l'a délégué."
+        ),
+        thresholds=ZERO_GOOD,
+    ),
+    stat(
+        "Attributs hérités renommés",
+        """
+SELECT countIf(mapContains(SpanAttributes, 'sonde.semconv.legacy')) AS spans
+FROM otel.otel_traces
+WHERE $__timeFilter(Timestamp)
+""",
+        16,
+        49,
+        unit="short",
+        description="Spans dont le collector a converti des noms d'attributs anciens ou tiers vers les conventions actuelles.",
+    ),
+    stat(
+        "Attributs supprimés",
+        """
+SELECT sum(toUInt64OrZero(SpanAttributes['redaction.redacted.count'])) AS dropped
+FROM otel.otel_traces
+WHERE $__timeFilter(Timestamp)
+""",
+        20,
+        49,
+        unit="short",
+        description="Attributs écartés par la liste blanche du collector. Une hausse signale une nouvelle instrumentation à examiner.",
+    ),
+    panel(
+        "table",
+        "Conversations fragmentées : traces à recoller",
+        """
+SELECT
+    min(Timestamp) AS time,
+    ConversationId AS conversation,
+    uniqExact(TraceId) AS traces,
+    groupUniqArray(AgentName) AS agents,
+    argMinIf(TraceId, Timestamp, ParentAgent = '') AS main_trace,
+    arrayFilter(t -> t != main_trace, groupUniqArray(TraceId))[1] AS detached_trace
+FROM otel.genai_agent_runs
+WHERE ConversationId != '' AND $__timeFilter(Timestamp)
+GROUP BY ConversationId
+HAVING traces > 1
+ORDER BY time DESC
+LIMIT 50
+""",
+        FORMAT_TABLE,
+        (0, 53, 24, 7),
+        options={"showHeader": True, "cellHeight": "sm"},
+        overrides=[
+            {
+                "matcher": {"id": "byRegexp", "options": "main_trace|detached_trace"},
+                "properties": [{"id": "links", "value": TRACE_LINK}],
+            }
+        ],
+    ),
+]
+
+# --- Investigation ------------------------------------------------------------------
+panels.append(row("Investigation", 60))
 panels += [
     panel(
         "table",
-        "Most expensive runs (click a trace id)",
-        """
+        "Exécutions les plus chères (cliquez un identifiant de trace)",
+        f"""
 SELECT
     r.Timestamp AS time,
     r.AgentVersion AS version,
@@ -531,12 +686,12 @@ INNER JOIN
     WHERE $__timeFilter(Timestamp)
     GROUP BY TraceId
 ) AS c ON r.TraceId = c.TraceId
-WHERE $__timeFilter(r.Timestamp)
+WHERE r.{MAIN} AND $__timeFilter(r.Timestamp)
 ORDER BY c.CostUsd DESC
 LIMIT 20
 """,
         FORMAT_TABLE,
-        (0, 49, 24, 8),
+        (0, 61, 24, 8),
         options={"showHeader": True, "cellHeight": "sm"},
         overrides=[
             {"matcher": {"id": "byName", "options": "trace_id"}, "properties": [{"id": "links", "value": TRACE_LINK}]},
@@ -552,7 +707,7 @@ LIMIT 20
     ),
     panel(
         "traces",
-        "Trace explorer (latest run, or the trace id you clicked above)",
+        "Trace (dernière exécution, ou celle que vous avez cliquée)",
         """
 WITH
     coalesce(nullIf(${trace_id:sqlstring}, ''), (SELECT argMax(TraceId, Timestamp) FROM otel.genai_agent_runs)) AS trace_id,
@@ -574,14 +729,128 @@ WHERE TraceId = trace_id AND Timestamp >= trace_start AND Timestamp <= trace_end
 ORDER BY startTime ASC
 """,
         FORMAT_TRACE,
-        (0, 57, 24, 16),
+        (0, 69, 24, 16),
     ),
 ]
 
+ALERTS_OUTPUT = Path(__file__).parent / "provisioning" / "alerting" / "sonde-alerts.yaml"
+
+# Alert rules on the data-quality signals: a dashboard nobody watches catches nothing.
+# Each query returns a time series; the rule reduces it over the window, then compares.
+ALERT_RULES = [
+    {
+        "uid": "sonde-llm-sans-tokens",
+        "title": "Appels LLM sans tokens",
+        "sql": """
+SELECT $__timeInterval(Timestamp) AS time, countIf(InputTokens = 0 AND StatusCode != 'Error') / count() AS ratio
+FROM otel.genai_llm_calls
+WHERE $__timeFilter(Timestamp)
+GROUP BY time
+ORDER BY time
+""",
+        "reducer": "mean",
+        "threshold": 0.05,
+        "summary": "Plus de 5 % des appels LLM réussis n'ont aucun token : coûts et tableaux de bord sont faux.",
+        "description": "Un attribut gen_ai.usage.* a probablement changé de nom : ajoutez la correspondance dans "
+        "transform/genai_normalize (otel-collector/config.yaml).",
+    },
+    {
+        "uid": "sonde-spans-orphelins",
+        "title": "Spans orphelins",
+        "sql": f"""
+SELECT $__timeInterval(Timestamp) AS time, count() AS orphans
+FROM otel.otel_traces{ORPHAN_FILTER}
+GROUP BY time
+ORDER BY time
+""",
+        "reducer": "sum",
+        "threshold": 0,
+        "summary": "Des spans arrivent sans leur parent : des traces sont incomplètes.",
+        "description": "Cherchez une perte à l'export (file pleine, collector redémarré) ou un échantillonnage "
+        "décidé différemment selon les services.",
+    },
+    {
+        "uid": "sonde-conversations-fragmentees",
+        "title": "Conversations fragmentées",
+        "sql": f"""
+SELECT $__timeInterval(first_seen) AS time, count() AS conversations
+FROM
+({FRAGMENTED_CONVERSATIONS}
+)
+GROUP BY time
+ORDER BY time
+""",
+        "reducer": "sum",
+        "threshold": 0,
+        "summary": "Des conversations sont réparties sur plusieurs traces : le contexte ne suit pas les sous-agents.",
+        "description": "Un sous-agent lancé dans un thread ou un processus sans propagation du contexte "
+        "(contextvars.copy_context, instrumentation threading, en-tête traceparent).",
+    },
+]
+
+
+def build_alerts() -> dict:
+    expr = {"type": "__expr__", "uid": "__expr__"}
+    rules = []
+    for rule in ALERT_RULES:
+        rules.append(
+            {
+                "uid": rule["uid"],
+                "title": rule["title"],
+                "condition": "C",
+                "data": [
+                    {
+                        "refId": "A",
+                        "relativeTimeRange": {"from": 900, "to": 0},
+                        "datasourceUid": DATASOURCE["uid"],
+                        "model": {
+                            **target(rule["sql"], FORMAT_TIMESERIES),
+                            "intervalMs": 60000,
+                            "maxDataPoints": 43200,
+                        },
+                    },
+                    {
+                        "refId": "B",
+                        "datasourceUid": "__expr__",
+                        "model": {
+                            "refId": "B",
+                            "type": "reduce",
+                            "expression": "A",
+                            "reducer": rule["reducer"],
+                            "settings": {"mode": "dropNN"},
+                            "datasource": expr,
+                        },
+                    },
+                    {
+                        "refId": "C",
+                        "datasourceUid": "__expr__",
+                        "model": {
+                            "refId": "C",
+                            "type": "threshold",
+                            "expression": "B",
+                            "conditions": [{"evaluator": {"type": "gt", "params": [rule["threshold"]]}}],
+                            "datasource": expr,
+                        },
+                    },
+                ],
+                "dashboardUid": "sonde-agents",
+                "noDataState": "OK",
+                "execErrState": "Error",
+                "for": "2m",
+                "annotations": {"summary": rule["summary"], "description": rule["description"]},
+                "labels": {"service": "sonde", "type": "qualite-donnees"},
+            }
+        )
+    return {
+        "apiVersion": 1,
+        "groups": [{"orgId": 1, "name": "qualite-des-donnees", "folder": "Sonde", "interval": "1m", "rules": rules}],
+    }
+
+
 dashboard = {
     "uid": "sonde-agents",
-    "title": "Sonde — AI agent observability",
-    "description": "OpenTelemetry GenAI traces stored in ClickHouse: cost, quality, reliability and safety of an agent.",
+    "title": "Sonde — observabilité des agents IA",
+    "description": "Traces OpenTelemetry GenAI stockées dans ClickHouse : coût, qualité, fiabilité et sécurité d'un agent.",
     "tags": ["genai", "opentelemetry", "clickhouse", "agents"],
     "timezone": "browser",
     "editable": True,
@@ -596,7 +865,7 @@ dashboard = {
             {
                 "type": "textbox",
                 "name": "trace_id",
-                "label": "Trace ID",
+                "label": "Identifiant de trace",
                 "query": "",
                 "current": {"text": "", "value": ""},
                 "options": [],
@@ -611,3 +880,11 @@ if __name__ == "__main__":
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT.write_text(json.dumps(dashboard, indent=2, ensure_ascii=False) + "\n")
     print(f"wrote {OUTPUT} ({len(panels)} panels)")
+    # JSON is valid YAML: Grafana reads it from provisioning/alerting, no YAML library needed here.
+    ALERTS_OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    ALERTS_OUTPUT.write_text(
+        "# Generated by grafana/build_dashboard.py, do not edit by hand.\n"
+        + json.dumps(build_alerts(), indent=2, ensure_ascii=False)
+        + "\n"
+    )
+    print(f"wrote {ALERTS_OUTPUT} ({len(ALERT_RULES)} alert rules)")

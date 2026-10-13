@@ -9,9 +9,7 @@ panel query are executed.
 from __future__ import annotations
 
 import json
-import random
 import re
-import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -19,59 +17,32 @@ import pytest
 from clickhouse_support import (
     INITDB,
     ROOT,
-    blocked_value_patterns,
+    Redaction,
     expand_grafana_macros,
     span_to_row,
     sql_statements,
 )
 from sonde_agent import semconv as sc
-from sonde_agent import tools as tools_module
-from sonde_agent.agent import Agent
-from sonde_agent.llm import LLMClient
-from sonde_agent.scenarios import build_variants, make_feedback_fn, pick_task
-from sonde_agent.tools import ToolRegistry, build_tools
 
 chdb_session = pytest.importorskip("chdb.session")
 
 DASHBOARD = ROOT / "grafana" / "dashboards" / "sonde-agents.json"
-RUNS = 60
+ALERTS = ROOT / "grafana" / "provisioning" / "alerting" / "sonde-alerts.yaml"
+from conftest import REPLAY_RUNS as RUNS  # noqa: E402
 
 
 @pytest.fixture(scope="module")
-def spans(span_exporter, fake_llm_url):
-    import fake_llm
-
-    original = fake_llm.Faults.snapshot()
-    fake_llm.Faults.update(
-        {
-            "latency_factor": 0,
-            "retry_after_s": 0,
-            "rate_limit_rate": 0.1,
-            "error_rate": 0.02,
-            "loop_rate": 0.75,
-            "hallucinated_tool_rate": 1,
-            "parallel_tool_rate": 0.3,
-            "small_model_dither_rate": 0.25,
-        }
-    )
-    fake_llm.Handler.rng.seed(42)
-    span_exporter.clear()
-    rng = random.Random(42)
-    variants = build_variants("sre-copilot", "sim-large", "sim-mini")
-    llm = LLMClient(fake_llm_url, provider="fake-llm", capture_content=True, max_retries=2, backoff_base_s=0)
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(tools_module.time, "sleep", lambda _s: None)
-        registry = ToolRegistry(build_tools(rng), capture_content=True)
-        for _ in range(RUNS):
-            version = rng.choice(["v1", "v2"])
-            category, task = pick_task(rng)
-            agent = Agent(variants[version], llm, registry, feedback_fn=make_feedback_fn(rng, version))
-            agent.run(task, conversation_id=str(uuid.uuid4()), category=category)
-    llm.close()
-    fake_llm.Faults.update(original)
-    finished = list(span_exporter.get_finished_spans())
-    span_exporter.clear()
-    return finished
+def spans(replayed_spans):
+    """What reaches ClickHouse: two LLM-call spans are dropped on purpose, as an
+    exporter losing data would, so their HTTP child spans become orphans."""
+    chats_with_children = {s.parent.span_id for s in replayed_spans if s.name == "POST" and s.parent}
+    dropped = {
+        s.context.span_id
+        for s in replayed_spans
+        if s.attributes.get(sc.GEN_AI_OPERATION_NAME) == sc.OP_CHAT and s.context.span_id in chats_with_children
+    }
+    dropped = set(sorted(dropped)[:2])
+    return [s for s in replayed_spans if s.context.span_id not in dropped]
 
 
 @pytest.fixture(scope="module")
@@ -81,8 +52,8 @@ def ch(spans, tmp_path_factory):
         for statement in sql_statements(script):
             session.query(statement)
 
-    patterns = blocked_value_patterns()
-    rows = "\n".join(json.dumps(span_to_row(span, patterns)) for span in spans)
+    redaction = Redaction()
+    rows = "\n".join(json.dumps(span_to_row(span, redaction)) for span in spans)
     session.query(
         "INSERT INTO otel.otel_traces SETTINGS date_time_input_format = 'best_effort' FORMAT JSONEachRow\n" + rows
     )
@@ -102,7 +73,11 @@ def count_operation(spans, operation: str) -> int:
 
 def test_materialized_views_type_every_genai_span(ch, spans):
     assert query(ch, "SELECT count() AS n FROM otel.otel_traces")[0]["n"] == len(spans)
-    assert query(ch, "SELECT count() AS n FROM otel.genai_agent_runs")[0]["n"] == RUNS
+    invoke_spans = count_operation(spans, sc.OP_INVOKE_AGENT)
+    assert query(ch, "SELECT count() AS n FROM otel.genai_agent_runs")[0]["n"] == invoke_spans
+    assert query(ch, "SELECT count() AS n FROM otel.genai_agent_runs WHERE ParentAgent = ''")[0]["n"] == RUNS
+    sub_runs = query(ch, "SELECT DISTINCT AgentName, ParentAgent FROM otel.genai_agent_runs WHERE ParentAgent != ''")
+    assert sub_runs == [{"AgentName": "log-analyst", "ParentAgent": "sre-copilot"}]
     assert query(ch, "SELECT count() AS n FROM otel.genai_llm_calls")[0]["n"] == count_operation(spans, sc.OP_CHAT)
     assert query(ch, "SELECT count() AS n FROM otel.genai_tool_calls")[0]["n"] == count_operation(
         spans, sc.OP_EXECUTE_TOOL
@@ -111,7 +86,8 @@ def test_materialized_views_type_every_genai_span(ch, spans):
     runs = query(ch, "SELECT * FROM otel.genai_agent_runs")
     assert {r["AgentVersion"] for r in runs} == {"v1", "v2"}
     assert {r["Outcome"] for r in runs} <= {"completed", "max_steps_exceeded", "llm_error"}
-    assert all(r["AgentName"] == "sre-copilot" and r["Steps"] >= 1 for r in runs)
+    assert {r["AgentName"] for r in runs} == {"sre-copilot", "log-analyst"}
+    assert all(r["Steps"] >= 1 for r in runs)
     assert sum(r["InputTokens"] for r in runs) > 0
 
     calls = query(ch, "SELECT FinishReason, Provider, ResponseModel, Step FROM otel.genai_llm_calls")
@@ -213,13 +189,52 @@ def test_every_dashboard_panel_query_runs(ch, panel, target):
         assert next(iter(rows[0])) == "time"
 
 
-def test_dashboard_is_generated_from_code():
+def test_dashboard_and_alerts_are_generated_from_code():
     import subprocess
     import sys
 
-    before = DASHBOARD.read_text()
+    before = DASHBOARD.read_text(), ALERTS.read_text()
     subprocess.run([sys.executable, str(ROOT / "grafana" / "build_dashboard.py")], check=True, capture_output=True)
-    assert DASHBOARD.read_text() == before, "run `python grafana/build_dashboard.py` and commit the result"
+    after = DASHBOARD.read_text(), ALERTS.read_text()
+    assert after == before, "run `python grafana/build_dashboard.py` and commit the result"
+
+
+def alert_queries():
+    import yaml
+
+    for rule in yaml.safe_load(ALERTS.read_text())["groups"][0]["rules"]:
+        (query_model,) = [d["model"] for d in rule["data"] if d["datasourceUid"] != "__expr__"]
+        yield pytest.param(query_model["rawSql"], id=rule["title"])
+
+
+@pytest.mark.parametrize("sql", list(alert_queries()))
+def test_every_alert_query_returns_a_time_series(ch, sql):
+    now = datetime.now(UTC)
+    rows = query(ch, expand_grafana_macros(sql, now - timedelta(hours=1), now + timedelta(hours=1)))
+    assert rows and next(iter(rows[0])) == "time" and len(rows[0]) == 2
+
+
+def test_data_quality_checks_catch_what_went_wrong(ch, spans):
+    now = datetime.now(UTC)
+
+    def stat(title):
+        (panel,) = [p for p in json.loads(DASHBOARD.read_text())["panels"] if p["title"] == title]
+        sql = expand_grafana_macros(panel["targets"][0]["rawSql"], now - timedelta(hours=1), now + timedelta(hours=1))
+        return float(next(iter(query(ch, sql)[0].values())))
+
+    present = {s.context.span_id for s in spans}
+    orphans = sum(1 for s in spans if s.parent and s.parent.span_id not in present)
+    detached = {
+        s.attributes[sc.GEN_AI_CONVERSATION_ID]
+        for s in spans
+        if s.name == "invoke_agent log-analyst" and s.parent is None
+    }
+    assert orphans >= 2 and detached  # the replay contains both failure modes
+    assert stat("Spans orphelins") == orphans
+    assert stat("Conversations fragmentées") == len(detached)
+    assert stat("Appels LLM sans tokens") == 0
+    assert stat("Spans GenAI sans agent") == 0
+    assert stat("Attributs supprimés") == 0  # every attribute the agent emits is allowed
 
 
 def documented_queries():
