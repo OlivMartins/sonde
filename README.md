@@ -145,7 +145,7 @@ Les traces de l’agent sont vérifiées span par span, sous-agents et modes de 
 
 ## D’où vient Sonde
 
-Après avoir utilisé LangSmith en entreprise, j’ai voulu comprendre ce que font vraiment les plateformes d’observabilité IA, de Langfuse à Arize Phoenix en passant par SigNoz. Comment une exécution d’agent devient-elle une trace ? Où se calcule son coût ? Que deviennent les prompts ? Que perd-on en échantillonnant ? Comment note-t-on une réponse ? Le plus sûr moyen de le savoir était de refaire le chemin moi-même, pièce par pièce, avec des standards ouverts.
+Après avoir utilisé LangSmith, j’ai voulu comprendre ce que font vraiment les plateformes d’observabilité IA, de Langfuse à Arize Phoenix en passant par SigNoz. Comment une exécution d’agent devient-elle une trace ? Où se calcule son coût ? Que deviennent les prompts ? Que perd-on en échantillonnant ? Comment note-t-on une réponse ? Le plus sûr moyen de le savoir était de refaire le chemin moi-même, pièce par pièce, avec des standards ouverts.
 
 Sonde n’est donc pas un concurrent de ces outils, plutôt leur vue éclatée : chaque choix y est visible, testé et réversible. Et comme il parle OpenTelemetry, il peut leur envoyer ses traces.
 
