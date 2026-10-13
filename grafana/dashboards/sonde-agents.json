@@ -1413,7 +1413,7 @@
       "gridPos": {
         "x": 0,
         "y": 58,
-        "w": 4,
+        "w": 3,
         "h": 4
       },
       "targets": [
@@ -1480,7 +1480,7 @@
         "uid": "clickhouse"
       },
       "gridPos": {
-        "x": 4,
+        "x": 3,
         "y": 58,
         "w": 4,
         "h": 4
@@ -1545,9 +1545,9 @@
         "uid": "clickhouse"
       },
       "gridPos": {
-        "x": 8,
+        "x": 7,
         "y": 58,
-        "w": 4,
+        "w": 3,
         "h": 4
       },
       "targets": [
@@ -1609,7 +1609,7 @@
         "uid": "clickhouse"
       },
       "gridPos": {
-        "x": 12,
+        "x": 10,
         "y": 58,
         "w": 4,
         "h": 4
@@ -1673,7 +1673,7 @@
         "uid": "clickhouse"
       },
       "gridPos": {
-        "x": 16,
+        "x": 14,
         "y": 58,
         "w": 4,
         "h": 4
@@ -1725,9 +1725,9 @@
         "uid": "clickhouse"
       },
       "gridPos": {
-        "x": 20,
+        "x": 18,
         "y": 58,
-        "w": 4,
+        "w": 3,
         "h": 4
       },
       "targets": [
@@ -1769,6 +1769,70 @@
     },
     {
       "id": 34,
+      "type": "stat",
+      "title": "Durées négatives",
+      "description": "Spans qui finissent avant d'avoir commencé : l'horloge de la machine qui les émet a reculé (synchronisation NTP, sortie de veille, Docker Desktop qui recale sa machine virtuelle). Leur durée compte pour 0 dans les vues ; sans ce garde-fou, une latence s'afficherait en siècles.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 21,
+        "y": 58,
+        "w": 3,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "pluginVersion": "4.22.1",
+          "rawSql": "SELECT sum(NegativeDurations) AS spans\nFROM otel.span_quality_1m\nWHERE $__timeFilter(Minute)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value"
+      }
+    },
+    {
+      "id": 35,
       "type": "table",
       "title": "Conversations fragmentées : traces à recoller",
       "description": "",
@@ -1824,7 +1888,7 @@
       }
     },
     {
-      "id": 35,
+      "id": 36,
       "type": "row",
       "title": "Investigation",
       "collapsed": false,
@@ -1837,7 +1901,7 @@
       "panels": []
     },
     {
-      "id": 36,
+      "id": 37,
       "type": "table",
       "title": "Exécutions les plus chères (cliquez un identifiant de trace)",
       "description": "Les chiffres viennent des vues, calculées sur 100 % des spans. trace_kept indique si la trace brute est encore là : avec l'échantillonnage, seules les traces intéressantes et une part du reste sont gardées.",
@@ -1925,7 +1989,7 @@
       }
     },
     {
-      "id": 37,
+      "id": 38,
       "type": "traces",
       "title": "Trace (dernière exécution gardée, ou celle que vous avez cliquée)",
       "description": "",
@@ -1950,7 +2014,7 @@
           "format": 3,
           "queryType": "traces",
           "pluginVersion": "4.22.1",
-          "rawSql": "WITH\n    coalesce(\n        nullIf(${trace_id:sqlstring}, ''),\n        (\n            SELECT argMax(TraceId, Timestamp)\n            FROM otel.genai_agent_runs\n            WHERE ParentAgent = '' AND $__timeFilter(Timestamp)\n              AND TraceId IN (SELECT TraceId FROM otel.otel_traces_trace_id_ts WHERE Start >= $__fromTime - INTERVAL 1 HOUR)\n        )\n    ) AS trace_id,\n    (SELECT min(Start) FROM otel.otel_traces_trace_id_ts WHERE TraceId = trace_id) AS trace_start,\n    (SELECT max(End) + 1 FROM otel.otel_traces_trace_id_ts WHERE TraceId = trace_id) AS trace_end\nSELECT\n    TraceId AS traceID,\n    SpanId AS spanID,\n    ParentSpanId AS parentSpanID,\n    ServiceName AS serviceName,\n    SpanName AS operationName,\n    multiply(toUnixTimestamp64Nano(Timestamp), 0.000001) AS startTime,\n    multiply(Duration, 0.000001) AS duration,\n    arrayMap(key -> map('key', key, 'value', SpanAttributes[key]), mapKeys(SpanAttributes)) AS tags,\n    arrayMap(key -> map('key', key, 'value', ResourceAttributes[key]), mapKeys(ResourceAttributes)) AS serviceTags,\n    if(StatusCode IN ('Error', 'STATUS_CODE_ERROR'), 2, 0) AS statusCode\nFROM otel.otel_traces\nWHERE TraceId = trace_id AND Timestamp >= trace_start AND Timestamp <= trace_end\nORDER BY startTime ASC"
+          "rawSql": "WITH\n    coalesce(\n        nullIf(${trace_id:sqlstring}, ''),\n        (\n            SELECT argMax(TraceId, Timestamp)\n            FROM otel.genai_agent_runs\n            WHERE ParentAgent = '' AND $__timeFilter(Timestamp)\n              AND TraceId IN (SELECT TraceId FROM otel.otel_traces_trace_id_ts WHERE Start >= $__fromTime - INTERVAL 1 HOUR)\n        )\n    ) AS trace_id,\n    (SELECT min(Start) FROM otel.otel_traces_trace_id_ts WHERE TraceId = trace_id) AS trace_start,\n    (SELECT max(End) + 1 FROM otel.otel_traces_trace_id_ts WHERE TraceId = trace_id) AS trace_end\nSELECT\n    TraceId AS traceID,\n    SpanId AS spanID,\n    ParentSpanId AS parentSpanID,\n    ServiceName AS serviceName,\n    SpanName AS operationName,\n    multiply(toUnixTimestamp64Nano(Timestamp), 0.000001) AS startTime,\n    multiply(greatest(toInt64(Duration), 0), 0.000001) AS duration,\n    arrayMap(key -> map('key', key, 'value', SpanAttributes[key]), mapKeys(SpanAttributes)) AS tags,\n    arrayMap(key -> map('key', key, 'value', ResourceAttributes[key]), mapKeys(ResourceAttributes)) AS serviceTags,\n    if(StatusCode IN ('Error', 'STATUS_CODE_ERROR'), 2, 0) AS statusCode\nFROM otel.otel_traces\nWHERE TraceId = trace_id AND Timestamp >= trace_start AND Timestamp <= trace_end\nORDER BY startTime ASC"
         }
       ],
       "fieldConfig": {

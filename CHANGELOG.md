@@ -2,6 +2,21 @@
 
 Toutes les évolutions notables de Sonde sont consignées ici. Le format s’inspire de [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/) et les versions suivent le [versionnage sémantique](https://semver.org/lang/fr/).
 
+## [0.3.1] - 2026-10-13
+
+### Corrigé
+
+- Une latence pouvait s’afficher en siècles. Les horodatages d’un span viennent de l’horloge murale du processus ; si elle recule pendant le span (synchronisation NTP, sortie de veille, Docker Desktop qui recale sa machine virtuelle), le span finit avant d’avoir commencé, et sa durée négative devient environ 584 ans dans la colonne `UInt64`. Les vues la comptent désormais pour 0, et l’explorateur de traces aussi.
+
+### Ajouté
+
+- Contrôle « Durées négatives » dans la rangée « Qualité des données », alimenté par la colonne `NegativeDurations` de `span_quality_1m`.
+- Capture du tableau de bord dans le README.
+
+### À savoir avant de mettre à jour
+
+- Les vues et `span_quality_1m` changent : repartez de zéro avec `docker compose down -v`, puis `docker compose up -d --build`.
+
 ## [0.3.0] - 2026-10-13
 
 Juger la qualité des réponses, échantillonner les traces sans fausser les chiffres, et s’ouvrir aux autres outils. Une tâche « réussie » n’est pas forcément une bonne réponse, garder chaque span coûte cher, et Sonde doit pouvoir alimenter Langfuse ou Phoenix plutôt que les concurrencer.
@@ -82,6 +97,7 @@ Première version : un socle d’observabilité pour agents IA, de la trace Open
 - Intégration continue : tests à chaque push, puis démarrage de la stack complète et interrogation de chaque panneau à travers Grafana. À la publication d’une release, l’archive, sa somme de contrôle et le tableau de bord sont construits et joints automatiquement.
 - Politique de sécurité (`SECURITY.md`), licence Apache 2.0 et `NOTICE`.
 
+[0.3.1]: https://github.com/OlivMartins/sonde/releases/tag/v0.3.1
 [0.3.0]: https://github.com/OlivMartins/sonde/releases/tag/v0.3.0
 [0.2.0]: https://github.com/OlivMartins/sonde/releases/tag/v0.2.0
 [0.1.0]: https://github.com/OlivMartins/sonde/releases/tag/v0.1.0

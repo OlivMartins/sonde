@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/OlivMartins/sonde/releases/latest"><img src="https://img.shields.io/badge/version-0.3.0-F2C230?style=flat-square&labelColor=1B2A33" alt="Version 0.3.0"></a>
+  <a href="https://github.com/OlivMartins/sonde/releases/latest"><img src="https://img.shields.io/badge/version-0.3.1-F2C230?style=flat-square&labelColor=1B2A33" alt="Version 0.3.1"></a>
   <a href="https://github.com/OlivMartins/sonde/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/OlivMartins/sonde/ci.yml?branch=main&style=flat-square&label=tests&labelColor=1B2A33" alt="Tests"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/licence-Apache%202.0-1E7A68?style=flat-square&labelColor=1B2A33" alt="Licence Apache 2.0"></a>
   <img src="https://img.shields.io/badge/OpenTelemetry-GenAI-53636B?style=flat-square&labelColor=1B2A33" alt="OpenTelemetry GenAI">
@@ -66,6 +66,10 @@ Le contenu n’est capturé qu’en cas d’échec. Le collector ne garde que le
 </td>
 </tr>
 </table>
+
+<p align="center">
+  <img src="docs/assets/dashboard.png" width="100%" alt="Le tableau de bord Sonde dans Grafana : exécutions, taux de succès, durée, dépense LLM, cache de prompt, outils refusés, puis le test A/B entre les deux versions de l’agent, les tokens et la croissance du contexte">
+</p>
 
 ## Démarrer
 

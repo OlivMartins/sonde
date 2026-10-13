@@ -13,7 +13,8 @@ CREATE TABLE IF NOT EXISTS otel.span_quality_1m
     GenAISpansWithoutAgent UInt64 COMMENT 'chat and execute_tool spans with no gen_ai.agent.name',
     LegacyRenamed UInt64 COMMENT 'spans renamed by transform/genai_normalize',
     RedactedAttributes UInt64 COMMENT 'span attributes dropped by the allow-list',
-    MaskedValues UInt64 COMMENT 'span attribute values masked by the redaction processor'
+    MaskedValues UInt64 COMMENT 'span attribute values masked by the redaction processor',
+    NegativeDurations UInt64 COMMENT 'spans that end before they start: the client clock went back'
 )
 ENGINE = SummingMergeTree
 PARTITION BY toYYYYMM(Minute)
@@ -30,6 +31,7 @@ AS SELECT
     countIf(SpanAttributes['gen_ai.operation.name'] IN ('chat', 'execute_tool') AND SpanAttributes['gen_ai.agent.name'] = '') AS GenAISpansWithoutAgent,
     countIf(mapContains(SpanAttributes, 'sonde.semconv.legacy')) AS LegacyRenamed,
     sum(toUInt64OrZero(SpanAttributes['redaction.redacted.count'])) AS RedactedAttributes,
-    sum(toUInt64OrZero(SpanAttributes['redaction.masked.count'])) AS MaskedValues
+    sum(toUInt64OrZero(SpanAttributes['redaction.masked.count'])) AS MaskedValues,
+    countIf(toInt64(Duration) < 0) AS NegativeDurations
 FROM otel.otel_spans_stream
 GROUP BY Minute, ServiceName;

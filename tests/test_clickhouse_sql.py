@@ -310,6 +310,7 @@ def test_data_quality_checks_catch_what_went_wrong(ch, stored):
     assert stat("Appels LLM sans tokens") == 0
     assert stat("Spans GenAI sans agent") == 0
     assert stat("Attributs supprimés") == 0  # every attribute the agent emits is allowed
+    assert stat("Durées négatives") == 0
 
 
 def documented_queries():

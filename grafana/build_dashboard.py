@@ -649,6 +649,7 @@ WHERE $__timeFilter(Timestamp)
 """,
         0,
         58,
+        w=3,
         unit="percentunit",
         decimals=1,
         description=(
@@ -668,8 +669,9 @@ SELECT sum(GenAISpansWithoutAgent) / sum(GenAISpans) AS ratio
 FROM otel.span_quality_1m
 WHERE $__timeFilter(Minute)
 """,
-        4,
+        3,
         58,
+        w=4,
         unit="percentunit",
         decimals=1,
         description="Appels LLM ou outils impossibles à attribuer à un agent : ils échappent au test A/B.",
@@ -678,8 +680,9 @@ WHERE $__timeFilter(Minute)
     stat(
         "Spans orphelins",
         ORPHANS,
-        8,
+        7,
         58,
+        w=3,
         unit="short",
         description=(
             "Spans dont le parent n'est jamais arrivé : export perdu, plantage, échantillonnage incohérent. "
@@ -691,8 +694,9 @@ WHERE $__timeFilter(Minute)
     stat(
         "Conversations fragmentées",
         FRAGMENTED,
-        12,
+        10,
         58,
+        w=4,
         unit="short",
         description=(
             "Une même conversation répartie sur plusieurs traces : le contexte n'a pas suivi un sous-agent "
@@ -707,8 +711,9 @@ SELECT sum(LegacyRenamed) AS spans
 FROM otel.span_quality_1m
 WHERE $__timeFilter(Minute)
 """,
-        16,
+        14,
         58,
+        w=4,
         unit="short",
         description="Spans dont le collector a converti des noms d'attributs anciens ou tiers vers les conventions actuelles.",
     ),
@@ -719,10 +724,29 @@ SELECT sum(RedactedAttributes) AS dropped
 FROM otel.span_quality_1m
 WHERE $__timeFilter(Minute)
 """,
-        20,
+        18,
         58,
+        w=3,
         unit="short",
         description="Attributs écartés par la liste blanche du collector. Une hausse signale une nouvelle instrumentation à examiner.",
+    ),
+    stat(
+        "Durées négatives",
+        """
+SELECT sum(NegativeDurations) AS spans
+FROM otel.span_quality_1m
+WHERE $__timeFilter(Minute)
+""",
+        21,
+        58,
+        w=3,
+        unit="short",
+        description=(
+            "Spans qui finissent avant d'avoir commencé : l'horloge de la machine qui les émet a reculé "
+            "(synchronisation NTP, sortie de veille, Docker Desktop qui recale sa machine virtuelle). "
+            "Leur durée compte pour 0 dans les vues ; sans ce garde-fou, une latence s'afficherait en siècles."
+        ),
+        thresholds=ZERO_GOOD,
     ),
     panel(
         "table",
@@ -826,7 +850,7 @@ SELECT
     ServiceName AS serviceName,
     SpanName AS operationName,
     multiply(toUnixTimestamp64Nano(Timestamp), 0.000001) AS startTime,
-    multiply(Duration, 0.000001) AS duration,
+    multiply(greatest(toInt64(Duration), 0), 0.000001) AS duration,
     arrayMap(key -> map('key', key, 'value', SpanAttributes[key]), mapKeys(SpanAttributes)) AS tags,
     arrayMap(key -> map('key', key, 'value', ResourceAttributes[key]), mapKeys(ResourceAttributes)) AS serviceTags,
     if(StatusCode IN ('Error', 'STATUS_CODE_ERROR'), 2, 0) AS statusCode

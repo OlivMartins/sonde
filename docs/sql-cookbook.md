@@ -118,7 +118,7 @@ ORDER BY loop_pct DESC;
 SELECT
     Timestamp,
     SpanName,
-    round(Duration / 1e6) AS ms,
+    round(greatest(toInt64(Duration), 0) / 1e6) AS ms,
     StatusCode,
     SpanAttributes['sonde.agent.step'] AS step,
     SpanAttributes['gen_ai.usage.input_tokens'] AS input_tokens,

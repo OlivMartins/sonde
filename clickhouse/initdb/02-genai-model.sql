@@ -11,6 +11,13 @@
 --   otel_spans_stream ──MV──▶ genai_agent_runs   (one row per agent run)
 --                     ├─MV──▶ genai_llm_calls    (one row per model call) ──MV──▶ genai_usage_1m
 --                     └─MV──▶ genai_tool_calls   (one row per tool call)
+--
+-- Durations do not trust client clocks. Span timestamps come from the wall
+-- clock of the emitting process; if it goes back during a span (NTP step,
+-- resume from sleep, Docker Desktop resyncing its VM), the span ends before
+-- it starts and the exporter writes a negative duration into the UInt64
+-- column, where it wraps to about 584 years. toInt64 recovers the sign; such
+-- durations count as 0 here, and as NegativeDurations in span_quality_1m.
 
 -- One row per agent run (invoke_agent span), sub-agent runs included -----------
 
@@ -64,7 +71,7 @@ AS SELECT
     toUInt32OrZero(SpanAttributes['gen_ai.usage.input_tokens']) AS InputTokens,
     toUInt32OrZero(SpanAttributes['gen_ai.usage.output_tokens']) AS OutputTokens,
     toUInt32OrZero(SpanAttributes['gen_ai.usage.cache_read.input_tokens']) AS CacheReadTokens,
-    Duration / 1e6 AS DurationMs,
+    greatest(toInt64(Duration), 0) / 1e6 AS DurationMs,
     toInt8OrZero(SpanAttributes['sonde.feedback.score']) AS Feedback
 FROM otel.otel_spans_stream
 WHERE SpanAttributes['gen_ai.operation.name'] = 'invoke_agent';
@@ -114,7 +121,7 @@ AS SELECT
     toUInt32OrZero(SpanAttributes['gen_ai.usage.input_tokens']) AS InputTokens,
     toUInt32OrZero(SpanAttributes['gen_ai.usage.output_tokens']) AS OutputTokens,
     toUInt32OrZero(SpanAttributes['gen_ai.usage.cache_read.input_tokens']) AS CacheReadTokens,
-    Duration / 1e6 AS DurationMs,
+    greatest(toInt64(Duration), 0) / 1e6 AS DurationMs,
     -- string[] attributes are stored as JSON arrays: '["stop"]'
     JSONExtractString(SpanAttributes['gen_ai.response.finish_reasons'], 1) AS FinishReason,
     toUInt8OrZero(SpanAttributes['sonde.llm.retries']) AS Retries,
@@ -158,7 +165,7 @@ AS SELECT
     SpanAttributes['gen_ai.tool.name'] AS ToolName,
     SpanAttributes['gen_ai.tool.call.id'] AS ToolCallId,
     SpanAttributes['sonde.tool.blocked'] = 'true' AS Blocked,
-    Duration / 1e6 AS DurationMs,
+    greatest(toInt64(Duration), 0) / 1e6 AS DurationMs,
     StatusCode,
     SpanAttributes['error.type'] AS ErrorType
 FROM otel.otel_spans_stream

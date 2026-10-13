@@ -192,6 +192,7 @@ Un tableau de bord faux est plus dangereux qu’un tableau de bord en panne. La 
 | Conversations fragmentées | une conversation répartie sur plusieurs traces : le contexte n’a pas suivi un sous-agent | dès la première |
 | Attributs hérités renommés | le travail de la normalisation, à surveiller lors d’une mise à jour de SDK | — |
 | Attributs supprimés | la liste blanche écarte des attributs : une nouvelle instrumentation est à examiner | — |
+| Durées négatives | l’horloge d’une machine a reculé pendant un span : sans garde-fou, une latence s’afficherait en siècles | — |
 
 Ces compteurs sont calculés sur le flux, dans `span_quality_1m` et les tables typées. Seuls les spans orphelins se cherchent dans les spans bruts, puisqu’il faut y retrouver chaque parent : avec l’échantillonnage, ce contrôle porte sur les traces gardées.
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sonde-agent"
-version = "0.3.0"
+version = "0.3.1"
 description = "Demo SRE agent instrumented with OpenTelemetry GenAI semantic conventions"
 requires-python = ">=3.11"
 license = "Apache-2.0"
