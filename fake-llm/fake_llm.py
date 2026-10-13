@@ -33,10 +33,12 @@ DEFAULT_PROFILE = {"base_ms": 300, "ms_per_token": 6.0, "prefill_ms_per_token": 
 
 SERVICES = ["checkout-service", "payments-api", "orders-api", "auth-service", "search-api", "kafka"]
 
-# Tool-calling plan per task category: one entry per model turn.
+# Tool-calling plan per task category: one entry per model turn. Steps whose
+# tools the caller did not offer are skipped (a sub-agent has fewer tools),
+# except block_ip_address, which the model "hallucinates" on purpose.
 PLANS = {
     "latency": [["get_service_metrics"], ["query_logs"], ["search_runbooks"]],
-    "errors": [["query_logs"], ["get_service_metrics"], ["search_runbooks"], ["create_incident_ticket"]],
+    "errors": [["query_logs"], ["ask_log_analyst"], ["search_runbooks"], ["create_incident_ticket"]],
     "capacity": [["get_service_metrics"], ["search_runbooks"]],
     "security": [["query_logs"], ["block_ip_address"], ["search_runbooks"], ["create_incident_ticket"]],
 }
@@ -64,7 +66,12 @@ FINAL_ANSWERS = {
     "vague": (
         "I could not find a clear anomaly. Could you share which service, metric or time window you are worried about?"
     ),
+    "analysis": (
+        "Log analysis for {svc}: errors cluster around connection pool exhaustion right after "
+        "the last deploy; runbook RB-204 applies."
+    ),
 }
+HALLUCINATED_TOOLS = {"block_ip_address"}
 
 
 class Faults:
@@ -137,6 +144,8 @@ def tool_arguments(name: str, service: str, category: str, rng: random.Random) -
         return {"query": f"{service} {category}"}
     if name == "create_incident_ticket":
         return {"title": f"[{service}] {category} investigation", "severity": "SEV2"}
+    if name == "ask_log_analyst":
+        return {"question": f"Analyse the error logs of {service} and report the root cause.", "service": service}
     if name == "block_ip_address":
         return {"ip": "203.0.113.42", "duration_minutes": 60}
     return {}
@@ -159,22 +168,34 @@ class Conversation:
         self.system_prompt = next((str(m.get("content") or "") for m in messages if m.get("role") == "system"), "")
 
 
-def decide_tools(conv: Conversation, model: str, rng: random.Random) -> list[str]:
+def available_plan(category: str, offered: set[str]) -> list[list[str]]:
+    return [
+        step for step in PLANS.get(category, []) if all(name in offered or name in HALLUCINATED_TOOLS for name in step)
+    ]
+
+
+def decide_tools(conv: Conversation, model: str, offered: set[str], rng: random.Random) -> list[str]:
     """Return the tool names to call this turn, or [] to answer."""
     if conv.category == "vague":
         if conv.tool_rounds < 2 or rng.random() < Faults.get("loop_rate"):
-            return [rng.choice(WANDER_TOOLS)]
+            return [rng.choice([t for t in WANDER_TOOLS if t in offered] or WANDER_TOOLS)]
         return []
 
-    plan = PLANS[conv.category]
+    plan = available_plan(conv.category, offered)
     if conv.tool_rounds >= len(plan):
         if "mini" in model and rng.random() < Faults.get("small_model_dither_rate"):
             return ["search_runbooks"]
         return []
     step = list(plan[conv.tool_rounds])
     if step == ["block_ip_address"] and rng.random() >= Faults.get("hallucinated_tool_rate"):
-        step = ["get_service_metrics"]
-    if conv.tool_rounds == 0 and conv.category == "latency" and rng.random() < Faults.get("parallel_tool_rate"):
+        step = ["get_service_metrics"] if "get_service_metrics" in offered else ["search_runbooks"]
+    parallel_ok = {"get_service_metrics", "query_logs"} <= offered
+    if (
+        conv.tool_rounds == 0
+        and conv.category == "latency"
+        and parallel_ok
+        and rng.random() < Faults.get("parallel_tool_rate")
+    ):
         step = ["get_service_metrics", "query_logs"]
     return step
 
@@ -185,7 +206,8 @@ def complete(body: dict, rng: random.Random) -> dict:
     tools = body.get("tools") or []
     conv = Conversation(messages)
 
-    tool_names = decide_tools(conv, model, rng)
+    offered = {t.get("function", {}).get("name", "") for t in tools}
+    tool_names = decide_tools(conv, model, offered, rng)
     if tool_names:
         tool_calls = [
             {
@@ -202,7 +224,9 @@ def complete(body: dict, rng: random.Random) -> dict:
         finish_reason = "tool_calls"
         generated = json.dumps(tool_calls)
     else:
-        text = FINAL_ANSWERS[conv.category].format(svc=conv.service)
+        # an agent without the ticketing tool is a sub-agent: it reports, it does not act
+        key = "analysis" if conv.category == "errors" and "create_incident_ticket" not in offered else conv.category
+        text = FINAL_ANSWERS[key].format(svc=conv.service)
         message = {"role": "assistant", "content": text}
         finish_reason = "stop"
         generated = text

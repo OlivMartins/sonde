@@ -5,6 +5,8 @@ from __future__ import annotations
 import random
 import sys
 import threading
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -19,8 +21,9 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 import fake_llm  # noqa: E402
 from sonde_agent import tools as tools_module  # noqa: E402
 from sonde_agent.agent import Agent  # noqa: E402
+from sonde_agent.delegation import build_registry  # noqa: E402
 from sonde_agent.llm import LLMClient  # noqa: E402
-from sonde_agent.scenarios import build_variants  # noqa: E402
+from sonde_agent.scenarios import build_variants, make_feedback_fn, pick_task  # noqa: E402
 from sonde_agent.telemetry import setup_telemetry  # noqa: E402
 from sonde_agent.tools import ToolRegistry, build_tools  # noqa: E402
 
@@ -62,19 +65,76 @@ def faults(monkeypatch):
     fake_llm.Faults.update(original)
 
 
+@pytest.fixture(scope="session")
+def executor():
+    pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="sub-agent")
+    yield pool
+    pool.shutdown(wait=True)
+
+
 @pytest.fixture
-def make_agent(fake_llm_url, span_exporter, faults):
+def make_agent(fake_llm_url, span_exporter, faults, executor):
     span_exporter.clear()
     clients: list[LLMClient] = []
 
-    def factory(version: str = "v1", capture: bool = True, seed: int = 7) -> Agent:
+    def factory(
+        version: str = "v1",
+        capture: bool | str = True,
+        seed: int = 7,
+        delegation: bool = False,
+        lost_context_rate: float = 0.0,
+    ) -> Agent:
         rng = random.Random(seed)
         llm = LLMClient(fake_llm_url, provider="fake-llm", capture_content=capture, backoff_base_s=0)
         clients.append(llm)
         config = build_variants("sre-copilot", "sim-large", "sim-mini")[version]
-        registry = ToolRegistry(build_tools(rng), capture_content=capture)
+        if delegation:
+            registry = build_registry(llm, rng, executor, capture=capture, lost_context_rate=lost_context_rate)
+        else:
+            registry = ToolRegistry(build_tools(rng), capture_content=capture)
         return Agent(config, llm, registry, feedback_fn=lambda _outcome: 1)
 
     yield factory
     for client in clients:
         client.close()
+
+
+REPLAY_RUNS = 60
+
+
+@pytest.fixture(scope="session")
+def replayed_spans(span_exporter, fake_llm_url, executor):
+    """A realistic mix of agent runs, shared by the ClickHouse and collector tests:
+    both agent versions, every task category, rate limits, loops, refused tools,
+    sub-agent delegation (30% of it with the context lost), content captured."""
+    original = fake_llm.Faults.snapshot()
+    fake_llm.Faults.update(
+        {
+            "latency_factor": 0,
+            "retry_after_s": 0,
+            "rate_limit_rate": 0.1,
+            "error_rate": 0.02,
+            "loop_rate": 0.75,
+            "hallucinated_tool_rate": 1,
+            "parallel_tool_rate": 0.3,
+            "small_model_dither_rate": 0.25,
+        }
+    )
+    fake_llm.Handler.rng.seed(42)
+    span_exporter.clear()
+    rng = random.Random(42)
+    variants = build_variants("sre-copilot", "sim-large", "sim-mini")
+    llm = LLMClient(fake_llm_url, provider="fake-llm", capture_content="all", max_retries=2, backoff_base_s=0)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(tools_module.time, "sleep", lambda _s: None)
+        registry = build_registry(llm, rng, executor, capture="all", lost_context_rate=0.3)
+        for _ in range(REPLAY_RUNS):
+            version = rng.choice(["v1", "v2"])
+            category, task = pick_task(rng)
+            agent = Agent(variants[version], llm, registry, feedback_fn=make_feedback_fn(rng, version))
+            agent.run(task, conversation_id=str(uuid.uuid4()), category=category)
+    llm.close()
+    fake_llm.Faults.update(original)
+    finished = list(span_exporter.get_finished_spans())
+    span_exporter.clear()
+    return finished

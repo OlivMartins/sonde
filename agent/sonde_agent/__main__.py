@@ -13,18 +13,16 @@ import random
 import signal
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 from .agent import Agent
+from .capture import capture_from_env
+from .delegation import build_registry
 from .llm import LLMClient
 from .scenarios import build_variants, make_feedback_fn, pick_task
 from .telemetry import setup_telemetry
-from .tools import ToolRegistry, build_tools
 
 log = logging.getLogger("sonde")
-
-
-def env_flag(name: str, default: bool = False) -> bool:
-    return os.getenv(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def main() -> None:
@@ -40,8 +38,10 @@ def main() -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     provider = setup_telemetry()
 
-    # Content capture is opt-in, as recommended by the GenAI conventions.
-    capture = env_flag("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT")
+    # Content capture is opt-in, as recommended by the GenAI conventions: off, errors or all.
+    capture = capture_from_env()
+    lost_context_rate = float(os.getenv("SONDE_FAULT_LOST_CONTEXT_RATE", "0"))
+    sub_agents = ThreadPoolExecutor(max_workers=max(2, args.concurrency), thread_name_prefix="sub-agent")
     llm = LLMClient(
         base_url=os.getenv("LLM_BASE_URL", "http://localhost:8080/v1"),
         api_key=os.getenv("LLM_API_KEY", ""),
@@ -63,7 +63,14 @@ def main() -> None:
 
     def worker(index: int) -> None:
         rng = random.Random(None if args.seed is None else args.seed + index)
-        tools = ToolRegistry(build_tools(rng), capture_content=capture)
+        tools = build_registry(
+            llm,
+            rng,
+            sub_agents,
+            capture=capture,
+            sub_model=os.getenv("AGENT_V2_MODEL", "sim-mini"),
+            lost_context_rate=lost_context_rate,
+        )
         while not stop.is_set():
             if budget is not None and not budget.acquire(blocking=False):
                 return
@@ -93,10 +100,11 @@ def main() -> None:
     for thread in threads:
         thread.start()
     log.info(
-        "load generator started: concurrency=%d runs=%s capture_content=%s",
+        "load generator started: concurrency=%d runs=%s capture=%s lost_context_rate=%s",
         args.concurrency,
         args.runs or "inf",
         capture,
+        lost_context_rate,
     )
     try:
         for thread in threads:
@@ -104,6 +112,7 @@ def main() -> None:
                 thread.join(timeout=0.5)
     finally:
         stop.set()
+        sub_agents.shutdown(wait=True, cancel_futures=True)
         llm.close()
         provider.shutdown()
 

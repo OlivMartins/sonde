@@ -18,6 +18,7 @@ from opentelemetry import trace
 from opentelemetry.trace import SpanKind, Status, StatusCode
 
 from . import semconv as sc
+from .capture import Capture
 
 tracer = trace.get_tracer("sonde_agent.tools")
 
@@ -67,7 +68,9 @@ def _sleep_ms(rng: random.Random, low: int, high: int) -> None:
     time.sleep(rng.uniform(low, high) / 1000)
 
 
-def build_tools(rng: random.Random) -> list[Tool]:
+def build_tools(rng: random.Random, delegate: Callable[..., dict] | None = None) -> list[Tool]:
+    """The SRE tools. With `delegate`, the agent can also hand log analysis to a sub-agent."""
+
     def get_service_metrics(service: str, window_minutes: int = 30, **_: object) -> dict:
         _sleep_ms(rng, 40, 250)
         if rng.random() < 0.02:
@@ -110,7 +113,7 @@ def build_tools(rng: random.Random) -> list[Tool]:
         return {"ticket_id": f"INC-{rng.randint(1000, 9999)}", "title": title, "severity": severity, "status": "open"}
 
     string = {"type": "string"}
-    return [
+    tools = [
         Tool(
             "get_service_metrics",
             "Return latency, error rate and throughput for a service over a time window.",
@@ -149,6 +152,20 @@ def build_tools(rng: random.Random) -> list[Tool]:
             side_effect=True,
         ),
     ]
+    if delegate is not None:
+        tools.append(
+            Tool(
+                "ask_log_analyst",
+                "Delegate a log investigation to the log-analyst sub-agent and get its conclusion.",
+                {
+                    "type": "object",
+                    "properties": {"question": string, "service": string},
+                    "required": ["question"],
+                },
+                delegate,
+            )
+        )
+    return tools
 
 
 class ToolRegistry:
@@ -159,9 +176,13 @@ class ToolRegistry:
     `tool_not_allowed` and returned to the model as an error.
     """
 
-    def __init__(self, tools: list[Tool], capture_content: bool = False):
+    def __init__(self, tools: list[Tool], capture_content: Capture | bool | str = False):
         self._tools = {tool.name: tool for tool in tools}
-        self.capture_content = capture_content
+        self.capture = Capture.coerce(capture_content)
+
+    def subset(self, names: set[str]) -> ToolRegistry:
+        """A registry restricted to some tools, e.g. for a sub-agent."""
+        return ToolRegistry([t for n, t in self._tools.items() if n in names], self.capture)
 
     def schemas(self) -> list[dict]:
         return [tool.schema() for tool in self._tools.values()]
@@ -180,13 +201,13 @@ class ToolRegistry:
                     sc.SONDE_TOOL_BLOCKED: False,
                 }
             )
-            if self.capture_content:
+            if self.capture is Capture.ALL:
                 span.set_attribute(sc.GEN_AI_TOOL_CALL_ARGUMENTS, raw_arguments)
 
             tool = self._tools.get(name)
             if tool is None:
                 span.set_attribute(sc.SONDE_TOOL_BLOCKED, True)
-                return self._fail(span, "tool_not_allowed", f"tool '{name}' is not allowed by policy")
+                return self._fail(span, "tool_not_allowed", f"tool '{name}' is not allowed by policy", raw_arguments)
             span.set_attribute(sc.GEN_AI_TOOL_DESCRIPTION, tool.description)
 
             try:
@@ -194,22 +215,24 @@ class ToolRegistry:
                 if not isinstance(arguments, dict):
                     raise TypeError("arguments must be a JSON object")
             except (json.JSONDecodeError, TypeError) as exc:
-                return self._fail(span, "invalid_arguments", str(exc))
+                return self._fail(span, "invalid_arguments", str(exc), raw_arguments)
 
             try:
                 result = json.dumps(tool.handler(**arguments))
             except Exception as exc:  # noqa: BLE001 - tool failures are reported to the model
                 span.record_exception(exc)
-                return self._fail(span, type(exc).__name__, str(exc))
+                return self._fail(span, type(exc).__name__, str(exc), raw_arguments)
 
-            if self.capture_content:
+            if self.capture is Capture.ALL:
                 span.set_attribute(sc.GEN_AI_TOOL_CALL_RESULT, result)
             return result
 
-    def _fail(self, span: trace.Span, error_type: str, message: str) -> str:
+    def _fail(self, span: trace.Span, error_type: str, message: str, raw_arguments: str) -> str:
         span.set_attribute(sc.ERROR_TYPE, error_type)
         span.set_status(Status(StatusCode.ERROR, message))
         result = json.dumps({"error": error_type, "message": message})
-        if self.capture_content:
+        if self.capture is not Capture.OFF:
+            # errors mode: a failed or refused call is exactly what someone will want to read
+            span.set_attribute(sc.GEN_AI_TOOL_CALL_ARGUMENTS, raw_arguments)
             span.set_attribute(sc.GEN_AI_TOOL_CALL_RESULT, result)
         return result

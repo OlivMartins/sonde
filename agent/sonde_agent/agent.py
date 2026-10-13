@@ -12,6 +12,7 @@ Span tree of one run:
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -19,7 +20,8 @@ from opentelemetry import trace
 from opentelemetry.trace import SpanKind, Status, StatusCode
 
 from . import semconv as sc
-from .llm import LLMClient, LLMError, Usage
+from .capture import Capture
+from .llm import LLMClient, LLMError, Usage, to_semconv_messages
 from .telemetry import run_attributes
 from .tools import ToolRegistry
 
@@ -85,8 +87,20 @@ class Agent:
         self.tools = tools
         self.feedback_fn = feedback_fn
 
-    def run(self, task: str, conversation_id: str, category: str = "unknown") -> RunResult:
+    def run(
+        self, task: str, conversation_id: str, category: str = "unknown", parent_agent: str | None = None
+    ) -> RunResult:
+        """Run the agent loop. `parent_agent` is set when this agent runs as a sub-agent."""
         cfg = self.config
+        span_attributes = {
+            sc.GEN_AI_OPERATION_NAME: sc.OP_INVOKE_AGENT,
+            sc.GEN_AI_AGENT_ID: f"{cfg.name}@{cfg.version}",
+            sc.GEN_AI_AGENT_DESCRIPTION: cfg.description,
+            sc.GEN_AI_PROVIDER_NAME: self.llm.provider,
+            sc.GEN_AI_REQUEST_MODEL: cfg.model,
+        }
+        if parent_agent:
+            span_attributes[sc.SONDE_AGENT_PARENT] = parent_agent
         attributes = {
             sc.GEN_AI_AGENT_NAME: cfg.name,
             sc.GEN_AI_AGENT_VERSION: cfg.version,
@@ -98,16 +112,14 @@ class Agent:
             tracer.start_as_current_span(
                 f"{sc.OP_INVOKE_AGENT} {cfg.name}",
                 kind=SpanKind.INTERNAL,
-                attributes={
-                    sc.GEN_AI_OPERATION_NAME: sc.OP_INVOKE_AGENT,
-                    sc.GEN_AI_AGENT_ID: f"{cfg.name}@{cfg.version}",
-                    sc.GEN_AI_AGENT_DESCRIPTION: cfg.description,
-                    sc.GEN_AI_PROVIDER_NAME: self.llm.provider,
-                    sc.GEN_AI_REQUEST_MODEL: cfg.model,
-                },
+                attributes=span_attributes,
             ) as span,
         ):
-            result = self._loop(task)
+            messages: list[dict] = [
+                {"role": "system", "content": cfg.system_prompt},
+                {"role": "user", "content": task},
+            ]
+            result = self._loop(messages)
             result.trace_id = format(span.get_span_context().trace_id, "032x")
 
             span.set_attributes(
@@ -124,6 +136,9 @@ class Agent:
                 result.error_type = result.error_type or result.outcome
                 span.set_attribute(sc.ERROR_TYPE, result.error_type)
                 span.set_status(Status(StatusCode.ERROR, result.outcome))
+                if self.llm.capture is Capture.ERRORS:
+                    # The whole conversation, recorded once, only for runs that went wrong.
+                    span.set_attribute(sc.GEN_AI_INPUT_MESSAGES, json.dumps(to_semconv_messages(messages)))
 
             if self.feedback_fn is not None:
                 result.feedback = self.feedback_fn(result.outcome)
@@ -131,9 +146,8 @@ class Agent:
                     span.set_attribute(sc.SONDE_FEEDBACK_SCORE, result.feedback)
             return result
 
-    def _loop(self, task: str) -> RunResult:
+    def _loop(self, messages: list[dict]) -> RunResult:
         cfg = self.config
-        messages: list[dict] = [{"role": "system", "content": cfg.system_prompt}, {"role": "user", "content": task}]
         result = RunResult(outcome=sc.OUTCOME_MAX_STEPS, steps=0, tool_calls=0, usage=Usage(), answer="", trace_id="")
 
         for step in range(1, cfg.max_steps + 1):

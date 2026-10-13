@@ -32,6 +32,11 @@ class RunAttributesSpanProcessor(SpanProcessor):
             span.set_attributes(attributes)
 
 
+def current_run_attributes() -> dict[str, str]:
+    """Attributes of the run the caller is executing in ({} outside a run)."""
+    return dict(context.get_value(_RUN_ATTRIBUTES_KEY) or {})
+
+
 @contextmanager
 def run_attributes(attributes: Mapping[str, str]) -> Iterator[None]:
     """Attach attributes that every span of the current run should carry."""

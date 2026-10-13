@@ -17,6 +17,7 @@ from opentelemetry import trace
 from opentelemetry.trace import SpanKind, Status, StatusCode
 
 from . import semconv as sc
+from .capture import Capture
 
 tracer = trace.get_tracer("sonde_agent.llm")
 
@@ -88,7 +89,7 @@ class LLMClient:
         base_url: str,
         api_key: str = "",
         provider: str = "openai",
-        capture_content: bool = False,
+        capture_content: Capture | bool | str = False,
         max_retries: int = 3,
         backoff_base_s: float = 0.5,
         timeout_s: float = 60.0,
@@ -99,7 +100,7 @@ class LLMClient:
         self._server_address = parsed.hostname or ""
         self._server_port = parsed.port or (443 if parsed.scheme == "https" else 80)
         self.provider = provider
-        self.capture_content = capture_content
+        self.capture = Capture.coerce(capture_content)
         self.max_retries = max_retries
         self.backoff_base_s = backoff_base_s
 
@@ -129,8 +130,9 @@ class LLMClient:
                     sc.SONDE_AGENT_STEP: step,
                 }
             )
-            if self.capture_content:
-                span.set_attribute(sc.GEN_AI_INPUT_MESSAGES, json.dumps(to_semconv_messages(messages)))
+            input_messages = json.dumps(to_semconv_messages(messages))
+            if self.capture is Capture.ALL:
+                span.set_attribute(sc.GEN_AI_INPUT_MESSAGES, input_messages)
 
             payload = {
                 "model": model,
@@ -139,7 +141,12 @@ class LLMClient:
                 "temperature": temperature,
                 "max_tokens": max_tokens,
             }
-            body = self._post_with_retries(span, payload)
+            try:
+                body = self._post_with_retries(span, payload)
+            except LLMError:
+                if self.capture is Capture.ERRORS:
+                    span.set_attribute(sc.GEN_AI_INPUT_MESSAGES, input_messages)
+                raise
 
             choice = body["choices"][0]
             message = choice["message"]
@@ -162,7 +169,7 @@ class LLMClient:
                     sc.GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS: usage.cache_read_input_tokens,
                 }
             )
-            if self.capture_content:
+            if self.capture is Capture.ALL:
                 output = to_semconv_messages([message])
                 for item in output:
                     item["finish_reason"] = finish_reason

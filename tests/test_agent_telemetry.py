@@ -139,3 +139,96 @@ def test_captured_messages_follow_semconv_format(make_agent, span_exporter):
     assert output[0]["role"] == "assistant"
     assert output[0]["finish_reason"] == "stop"
     assert output[0]["parts"][0]["type"] == "text"
+
+
+def spans_named(spans, name):
+    return [s for s in spans if s.name == name]
+
+
+def test_sub_agent_runs_in_a_thread_inside_the_parent_trace(make_agent, span_exporter):
+    result = make_agent("v1", delegation=True).run(
+        "orders-api returns HTTP 500, investigate.", "conv-7", category="errors"
+    )
+    assert result.outcome == sc.OUTCOME_COMPLETED
+
+    spans = span_exporter.get_finished_spans()
+    (root,) = spans_named(spans, "invoke_agent sre-copilot")
+    (delegation,) = spans_named(spans, "execute_tool ask_log_analyst")
+    (sub,) = spans_named(spans, "invoke_agent log-analyst")
+
+    assert sub.context.trace_id == root.context.trace_id
+    assert sub.parent.span_id == delegation.context.span_id
+    assert sub.attributes[sc.SONDE_AGENT_PARENT] == "sre-copilot"
+    assert sub.attributes[sc.GEN_AI_CONVERSATION_ID] == "conv-7"
+    assert sc.SONDE_AGENT_PARENT not in root.attributes
+
+    sub_chats = [
+        s for s in spans if s.parent and s.parent.span_id == sub.context.span_id and s.name.startswith("chat ")
+    ]
+    assert sub_chats and all(c.attributes[sc.GEN_AI_AGENT_NAME] == "log-analyst" for c in sub_chats)
+    assert all(c.attributes[sc.GEN_AI_REQUEST_MODEL] == "sim-mini" for c in sub_chats)
+    # the sub-agent only gets the tools it needs
+    sub_tools = {
+        s.attributes[sc.GEN_AI_TOOL_NAME]
+        for s in spans
+        if s.attributes.get(sc.GEN_AI_AGENT_NAME) == "log-analyst" and s.name.startswith("execute_tool")
+    }
+    assert sub_tools <= {"query_logs", "search_runbooks"}
+
+
+def test_lost_context_detaches_the_sub_agent_but_keeps_the_conversation(make_agent, span_exporter):
+    make_agent("v1", delegation=True, lost_context_rate=1).run(
+        "orders-api returns HTTP 500, investigate.", "conv-8", category="errors"
+    )
+    spans = span_exporter.get_finished_spans()
+    (root,) = spans_named(spans, "invoke_agent sre-copilot")
+    (sub,) = spans_named(spans, "invoke_agent log-analyst")
+
+    assert sub.parent is None  # a new, detached trace: what threads do without context propagation
+    assert sub.context.trace_id != root.context.trace_id
+    assert sub.attributes[sc.GEN_AI_CONVERSATION_ID] == "conv-8"  # what the data-quality check relies on
+    assert sub.attributes[sc.SONDE_AGENT_PARENT] == "sre-copilot"
+
+
+CONTENT_KEYS = {
+    sc.GEN_AI_INPUT_MESSAGES,
+    sc.GEN_AI_OUTPUT_MESSAGES,
+    sc.GEN_AI_TOOL_CALL_ARGUMENTS,
+    sc.GEN_AI_TOOL_CALL_RESULT,
+}
+
+
+def test_errors_capture_records_nothing_for_a_successful_run(make_agent, span_exporter):
+    make_agent("v1", capture="errors").run("checkout-service p95 latency doubled.", "conv-9", category="latency")
+    for span in span_exporter.get_finished_spans():
+        assert not CONTENT_KEYS & set(span.attributes), span.name
+
+
+def test_errors_capture_records_failures_only(make_agent, span_exporter, faults):
+    faults.update({"loop_rate": 1, "hallucinated_tool_rate": 1})
+    make_agent("v1", capture="errors").run("Something feels off in production.", "conv-10", category="vague")
+    spans = span_exporter.get_finished_spans()
+    (root,) = by_operation(spans, sc.OP_INVOKE_AGENT)
+    transcript = json.loads(root.attributes[sc.GEN_AI_INPUT_MESSAGES])
+    assert transcript[0]["role"] == "user" and len(transcript) > 8
+    for chat in by_operation(spans, sc.OP_CHAT):
+        assert not CONTENT_KEYS & set(chat.attributes)
+
+    make_agent("v1", capture="errors").run(
+        "Spike of 401 on auth-service, is it an attack?", "conv-11", category="security"
+    )
+    (blocked,) = spans_named(span_exporter.get_finished_spans(), "execute_tool block_ip_address")
+    assert "203.0.113.42" in blocked.attributes[sc.GEN_AI_TOOL_CALL_ARGUMENTS]
+    assert "tool_not_allowed" in blocked.attributes[sc.GEN_AI_TOOL_CALL_RESULT]
+
+
+def test_capture_policy_from_environment(monkeypatch):
+    from sonde_agent.capture import Capture, capture_from_env
+
+    monkeypatch.delenv("SONDE_CAPTURE_CONTENT", raising=False)
+    monkeypatch.delenv("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", raising=False)
+    assert capture_from_env() is Capture.OFF
+    monkeypatch.setenv("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "true")
+    assert capture_from_env() is Capture.ALL
+    monkeypatch.setenv("SONDE_CAPTURE_CONTENT", "Errors")
+    assert capture_from_env() is Capture.ERRORS

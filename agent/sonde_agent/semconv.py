@@ -48,12 +48,14 @@ SERVER_PORT = "server.port"
 # Project-specific attributes
 SONDE_TASK_CATEGORY = "sonde.task.category"
 SONDE_AGENT_OUTCOME = "sonde.agent.outcome"
+SONDE_AGENT_PARENT = "sonde.agent.parent"  # name of the delegating agent, on sub-agent runs
 SONDE_AGENT_STEPS = "sonde.agent.steps"
 SONDE_AGENT_STEP = "sonde.agent.step"
 SONDE_AGENT_TOOL_CALLS = "sonde.agent.tool_calls"
 SONDE_LLM_RETRIES = "sonde.llm.retries"
 SONDE_TOOL_BLOCKED = "sonde.tool.blocked"
 SONDE_FEEDBACK_SCORE = "sonde.feedback.score"
+SONDE_SEMCONV_LEGACY = "sonde.semconv.legacy"  # set by the collector when it renamed a legacy attribute
 
 # Span event emitted for each retried LLM request
 EVENT_LLM_RETRY = "sonde.llm.retry"

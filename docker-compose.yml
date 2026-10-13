@@ -54,7 +54,10 @@ services:
     environment:
       OTEL_SERVICE_NAME: sre-copilot
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
-      OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: ${CAPTURE_MESSAGE_CONTENT:-true}
+      # Prompt and tool content: off, errors (failed runs and calls only) or all.
+      SONDE_CAPTURE_CONTENT: ${SONDE_CAPTURE_CONTENT:-errors}
+      # Share of sub-agent delegations launched without trace context, to feed the data-quality checks.
+      SONDE_FAULT_LOST_CONTEXT_RATE: ${SONDE_FAULT_LOST_CONTEXT_RATE:-0.05}
       DEPLOYMENT_ENVIRONMENT: demo
       LLM_BASE_URL: ${LLM_BASE_URL:-http://fake-llm:8080/v1}
       LLM_API_KEY: ${LLM_API_KEY:-}
