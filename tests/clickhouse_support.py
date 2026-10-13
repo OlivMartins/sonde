@@ -49,26 +49,39 @@ def timestamp(ns: int) -> str:
     return datetime.fromtimestamp(seconds, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S") + f".{nanos:09d}Z"
 
 
-def blocked_value_patterns() -> list[re.Pattern]:
-    config = yaml.safe_load(COLLECTOR_CONFIG.read_text())
-    return [re.compile(p) for p in config["processors"]["redaction/genai"]["blocked_values"]]
+class Redaction:
+    """Mirror of the collector's redaction/genai processor, from otel-collector/config.yaml."""
+
+    def __init__(self) -> None:
+        config = yaml.safe_load(COLLECTOR_CONFIG.read_text())["processors"]["redaction/genai"]
+        assert config["allow_all_keys"] is False
+        self.allowed = set(config["allowed_keys"])
+        self.patterns = [re.compile(p) for p in config["blocked_values"]]
+
+    def __call__(self, attributes: dict) -> dict[str, object]:
+        kept: dict[str, object] = {}
+        redacted = masked = 0
+        for key, value in attributes.items():
+            if key not in self.allowed:
+                redacted += 1
+                continue
+            text = as_string(value)
+            new = text
+            for pattern in self.patterns:
+                new = pattern.sub("****", new)
+            if new != text:
+                masked += 1
+            kept[key] = new
+        allowed = len(kept)
+        # summary: info -- each count is only added when non-zero
+        for name, count in (("redacted", redacted), ("masked", masked), ("allowed", allowed)):
+            if count:
+                kept[f"redaction.{name}.count"] = str(count)
+        return kept
 
 
-def redact(attributes: dict[str, str], patterns: list[re.Pattern]) -> dict[str, str]:
-    masked = 0
-    result = {}
-    for key, value in attributes.items():
-        new = value
-        for pattern in patterns:
-            new = pattern.sub("****", new)
-        masked += new != value
-        result[key] = new
-    result["redaction.masked.count"] = str(masked)
-    return result
-
-
-def span_to_row(span, patterns: list[re.Pattern]) -> dict:
-    attributes = redact({k: as_string(v) for k, v in span.attributes.items()}, patterns)
+def span_to_row(span, redaction: Redaction) -> dict:
+    resource = redaction(dict(span.resource.attributes))
     return {
         "Timestamp": timestamp(span.start_time),
         "TraceId": format(span.context.trace_id, "032x"),
@@ -77,17 +90,17 @@ def span_to_row(span, patterns: list[re.Pattern]) -> dict:
         "TraceState": "",
         "SpanName": span.name,
         "SpanKind": KIND[span.kind],
-        "ServiceName": span.resource.attributes.get("service.name", ""),
-        "ResourceAttributes": {k: as_string(v) for k, v in span.resource.attributes.items()},
+        "ServiceName": resource.get("service.name", ""),
+        "ResourceAttributes": resource,
         "ScopeName": span.instrumentation_scope.name if span.instrumentation_scope else "",
         "ScopeVersion": (span.instrumentation_scope.version or "") if span.instrumentation_scope else "",
-        "SpanAttributes": attributes,
+        "SpanAttributes": redaction(dict(span.attributes)),
         "Duration": span.end_time - span.start_time,
         "StatusCode": STATUS[span.status.status_code],
         "StatusMessage": span.status.description or "",
         "Events.Timestamp": [timestamp(e.timestamp) for e in span.events],
         "Events.Name": [e.name for e in span.events],
-        "Events.Attributes": [{k: as_string(v) for k, v in e.attributes.items()} for e in span.events],
+        "Events.Attributes": [redaction(dict(e.attributes)) for e in span.events],
         "Links.TraceId": [],
         "Links.SpanId": [],
         "Links.TraceState": [],
@@ -108,4 +121,5 @@ def expand_grafana_macros(sql: str, start: datetime, end: datetime, interval_s: 
         lambda m: f"toStartOfInterval(toDateTime({m[1]}), INTERVAL {interval_s} second)",
         sql,
     )
+    sql = sql.replace("$__fromTime", f"toDateTime({t0})").replace("$__toTime", f"toDateTime({t1})")
     return sql.replace("${trace_id:sqlstring}", "''")

@@ -1,6 +1,13 @@
 # OpenTelemetry Collector (contrib 0.162.0)
 #
-#   agent ──OTLP──▶ memory_limiter ──▶ redaction ──▶ ClickHouse exporter
+#   agent ──OTLP──▶ memory_limiter ──▶ normalize ──▶ redaction ──▶ ClickHouse exporter
+#
+#   normalize  maps legacy or third-party GenAI attribute names to the current
+#              conventions, so a SDK upgrade or another instrumentation library
+#              does not silently zero the dashboards. Renamed spans are marked
+#              with sonde.semconv.legacy (tracked on the dashboard).
+#   redaction  fail-closed allow-list of attribute keys, then masking of
+#              secret-looking values in what is left.
 #
 # The exporter does not create tables (create_schema: false): the schema is
 # owned by clickhouse/initdb/, as recommended for production deployments.
@@ -19,12 +26,128 @@ processors:
     limit_percentage: 80
     spike_limit_percentage: 25
 
-  # Prompts, tool arguments and tool results are captured (opt-in) to debug
-  # agents. They routinely contain personal data and secrets, so values are
-  # masked here, before anything is stored. Masking happens in the pipeline,
-  # not in the application, so one policy covers every agent and team.
+  transform/genai_normalize:
+    error_mode: ignore
+    trace_statements:
+      # gen_ai.system was renamed gen_ai.provider.name
+      - 'set(span.attributes["sonde.semconv.legacy"], "gen_ai.system") where span.attributes["gen_ai.system"] != nil and span.attributes["gen_ai.provider.name"] == nil'
+      - 'set(span.attributes["gen_ai.provider.name"], span.attributes["gen_ai.system"]) where span.attributes["gen_ai.system"] != nil and span.attributes["gen_ai.provider.name"] == nil'
+      # prompt / completion tokens were renamed input / output tokens
+      - 'set(span.attributes["sonde.semconv.legacy"], "gen_ai.usage.prompt_tokens") where span.attributes["gen_ai.usage.prompt_tokens"] != nil and span.attributes["gen_ai.usage.input_tokens"] == nil'
+      - 'set(span.attributes["gen_ai.usage.input_tokens"], span.attributes["gen_ai.usage.prompt_tokens"]) where span.attributes["gen_ai.usage.prompt_tokens"] != nil and span.attributes["gen_ai.usage.input_tokens"] == nil'
+      - 'set(span.attributes["sonde.semconv.legacy"], "gen_ai.usage.completion_tokens") where span.attributes["gen_ai.usage.completion_tokens"] != nil and span.attributes["gen_ai.usage.output_tokens"] == nil'
+      - 'set(span.attributes["gen_ai.usage.output_tokens"], span.attributes["gen_ai.usage.completion_tokens"]) where span.attributes["gen_ai.usage.completion_tokens"] != nil and span.attributes["gen_ai.usage.output_tokens"] == nil'
+      # cache reads, older flat spelling
+      - 'set(span.attributes["sonde.semconv.legacy"], "gen_ai.usage.cache_read_input_tokens") where span.attributes["gen_ai.usage.cache_read_input_tokens"] != nil and span.attributes["gen_ai.usage.cache_read.input_tokens"] == nil'
+      - 'set(span.attributes["gen_ai.usage.cache_read.input_tokens"], span.attributes["gen_ai.usage.cache_read_input_tokens"]) where span.attributes["gen_ai.usage.cache_read_input_tokens"] != nil and span.attributes["gen_ai.usage.cache_read.input_tokens"] == nil'
+      # OpenLLMetry-style chat spans without gen_ai.operation.name
+      - 'set(span.attributes["sonde.semconv.legacy"], "llm.request.type") where span.attributes["gen_ai.operation.name"] == nil and span.attributes["llm.request.type"] == "chat"'
+      - 'set(span.attributes["gen_ai.operation.name"], "chat") where span.attributes["gen_ai.operation.name"] == nil and span.attributes["llm.request.type"] == "chat"'
+
+  # Prompts, tool arguments and tool results can be captured to debug agents
+  # (SONDE_CAPTURE_CONTENT: off, errors, all). They routinely contain personal
+  # data and secrets, so this processor runs before anything is stored, for
+  # every agent and team at once.
+  #
+  # 1. Fail closed: only the attribute keys listed below are kept, on spans,
+  #    span events, resources and scopes. Anything else is dropped and counted
+  #    in redaction.redacted.count (tracked on the dashboard). To keep a new
+  #    attribute, add it here: tests/test_collector_config.py checks that every
+  #    key the demo agent emits is listed.
+  # 2. Mask: values that look like secrets are replaced by ****. Regexes only
+  #    catch known formats (e-mails, key=value secrets, bearer tokens); free-text
+  #    personal data needs NER (see docs/ARCHITECTURE.md, "Limites connues").
   redaction/genai:
-    allow_all_keys: true
+    allow_all_keys: false
+    allowed_keys:
+      # resource
+      - service.name
+      - service.namespace
+      - service.version
+      - service.instance.id
+      - deployment.environment.name
+      - telemetry.sdk.language
+      - telemetry.sdk.name
+      - telemetry.sdk.version
+      - telemetry.distro.name
+      - telemetry.distro.version
+      - host.name
+      - host.arch
+      - os.type
+      - container.id
+      - k8s.namespace.name
+      - k8s.pod.name
+      - k8s.deployment.name
+      - cloud.provider
+      - cloud.region
+      # GenAI semantic conventions
+      - gen_ai.operation.name
+      - gen_ai.provider.name
+      - gen_ai.conversation.id
+      - gen_ai.agent.id
+      - gen_ai.agent.name
+      - gen_ai.agent.version
+      - gen_ai.agent.description
+      - gen_ai.workflow.name
+      - gen_ai.data_source.id
+      - gen_ai.output.type
+      - gen_ai.request.model
+      - gen_ai.request.max_tokens
+      - gen_ai.request.temperature
+      - gen_ai.request.top_p
+      - gen_ai.request.frequency_penalty
+      - gen_ai.request.presence_penalty
+      - gen_ai.request.stop_sequences
+      - gen_ai.request.seed
+      - gen_ai.request.choice.count
+      - gen_ai.response.id
+      - gen_ai.response.model
+      - gen_ai.response.finish_reasons
+      - gen_ai.usage.input_tokens
+      - gen_ai.usage.output_tokens
+      - gen_ai.usage.cache_read.input_tokens
+      - gen_ai.usage.cache_write.input_tokens
+      - gen_ai.tool.name
+      - gen_ai.tool.type
+      - gen_ai.tool.description
+      - gen_ai.tool.call.id
+      - gen_ai.embeddings.dimension.count
+      # GenAI content (opt-in capture, values are masked below)
+      - gen_ai.input.messages
+      - gen_ai.output.messages
+      - gen_ai.system_instructions
+      - gen_ai.tool.definitions
+      - gen_ai.tool.call.arguments
+      - gen_ai.tool.call.result
+      # general conventions: errors, exceptions, HTTP (stable and legacy names)
+      - error.type
+      - exception.type
+      - exception.message
+      - exception.stacktrace
+      - exception.escaped
+      - server.address
+      - server.port
+      - http.request.method
+      - http.response.status_code
+      - url.full
+      - url.scheme
+      - network.protocol.version
+      - http.method
+      - http.url
+      - http.status_code
+      # Sonde
+      - sonde.task.category
+      - sonde.agent.outcome
+      - sonde.agent.parent
+      - sonde.agent.steps
+      - sonde.agent.step
+      - sonde.agent.tool_calls
+      - sonde.llm.retries
+      - sonde.retry.attempt
+      - sonde.retry.delay_s
+      - sonde.tool.blocked
+      - sonde.feedback.score
+      - sonde.semconv.legacy
     blocked_values:
       # e-mail addresses
       - '[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+'
@@ -32,7 +155,7 @@ processors:
       - '(?i)(api[_-]?key|token|secret|password)=[^\s"\\,;]+'
       # bearer tokens in captured HTTP headers
       - '(?i)bearer [A-Za-z0-9._~+/-]+=*'
-    # Adds redaction.masked.count to each span: the dashboard tracks it.
+    # Adds redaction.masked.count and redaction.redacted.count: the dashboard tracks both.
     summary: info
 
 exporters:
@@ -64,7 +187,7 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, redaction/genai]
+      processors: [memory_limiter, transform/genai_normalize, redaction/genai]
       exporters: [clickhouse]
   telemetry:
     logs:
