@@ -29,11 +29,15 @@ check() {
   [ "$(ch "SELECT ($sql) > 0")" = "1" ] || fail "$label = $value"
 }
 
+FRAGMENTED="SELECT count() FROM (SELECT ConversationId FROM otel.genai_agent_runs WHERE ConversationId != '' GROUP BY ConversationId HAVING uniqExact(TraceId) > 1)"
+
+# La perte de contexte est aléatoire (SONDE_FAULT_LOST_CONTEXT_RATE) : on attend aussi qu'elle se produise.
 echo "attente des exécutions de l'agent dans ClickHouse..."
 for _ in $(seq 1 60); do
   runs=$(ch "SELECT count() FROM otel.genai_agent_runs WHERE ParentAgent = ''" 2>/dev/null || echo 0)
   subs=$(ch "SELECT count() FROM otel.genai_agent_runs WHERE ParentAgent != ''" 2>/dev/null || echo 0)
-  if [ "${runs:-0}" -ge 10 ] && [ "${subs:-0}" -ge 1 ]; then break; fi
+  fragmented=$(ch "$FRAGMENTED" 2>/dev/null || echo 0)
+  if [ "${runs:-0}" -ge 10 ] && [ "${subs:-0}" -ge 1 ] && [ "${fragmented:-0}" -ge 1 ]; then break; fi
   sleep 5
 done
 
@@ -69,7 +73,7 @@ check "appels d'outils" "SELECT count() FROM otel.genai_tool_calls"
 check "agrégat à la minute (appels)" "SELECT sum(Calls) FROM otel.genai_usage_1m"
 check "dépense LLM (USD)" "SELECT round(sum(CostUsd), 4) FROM otel.genai_cost_1m"
 check "valeurs masquées" "SELECT sum(toUInt64OrZero(SpanAttributes['redaction.masked.count'])) FROM otel.otel_traces"
-check "conversations fragmentées" "SELECT count() FROM (SELECT ConversationId FROM otel.genai_agent_runs WHERE ConversationId != '' GROUP BY ConversationId HAVING uniqExact(TraceId) > 1)"
+check "conversations fragmentées" "$FRAGMENTED"
 check "compteurs de qualité (flux)" "SELECT sum(Spans) FROM otel.span_quality_1m"
 check "span hérité normalisé" "SELECT count() FROM otel.genai_llm_calls WHERE TraceId = '${trace_id}' AND Provider = 'legacy-provider' AND InputTokens = 123 AND OutputTokens = 45"
 check "marqueur sonde.semconv.legacy" "SELECT count() FROM otel.otel_traces WHERE TraceId = '${trace_id}' AND mapContains(SpanAttributes, 'sonde.semconv.legacy')"
