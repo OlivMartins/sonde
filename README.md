@@ -71,25 +71,28 @@ Il suffit de Docker avec Compose v2.
 
 ```bash
 git clone https://github.com/OlivMartins/sonde.git && cd sonde
-make up
+docker compose up -d --build
 ```
 
 Ouvrez <http://localhost:3000> : le tableau de bord s’affiche directement, et les premières données arrivent en moins d’une minute.
 
-| Commande | Effet |
-| --- | --- |
-| `make chaos` / `make calm` | Provoque des limites de débit et des erreurs côté LLM, puis revient à la normale |
-| `make logs` | Une ligne par exécution de l’agent, avec son identifiant de trace |
-| `make sql` | Shell ClickHouse sur la base `otel` |
-| `make infra` | Démarre le socle seul, sans l’agent de démonstration |
-| `make clean` | Arrête tout et supprime les données |
+Le `Makefile` fournit des raccourcis (`make up`, `make chaos`…). Il est facultatif : chaque raccourci correspond à une commande Docker.
+
+| Effet | Commande | Raccourci |
+| --- | --- | --- |
+| Provoquer des limites de débit et des erreurs côté LLM | `curl -X POST localhost:8080/admin/faults -d '{"rate_limit_rate": 0.4}'` | `make chaos` |
+| Revenir à la normale | `curl -X POST localhost:8080/admin/faults -d '{"rate_limit_rate": 0.04}'` | `make calm` |
+| Suivre l’agent, une ligne par exécution | `docker compose logs -f agent` | `make logs` |
+| Ouvrir un shell ClickHouse | `docker compose exec clickhouse clickhouse-client -u sonde --password sonde -d otel` | `make sql` |
+| Démarrer le socle seul, sans l’agent de démonstration | `docker compose up -d clickhouse otel-collector grafana` | `make infra` |
+| Tout arrêter et supprimer les données | `docker compose down -v` | `make clean` |
 
 ## Brancher votre propre agent
 
 Le socle accepte toute application qui émet de l’OTLP. Pointez votre SDK OpenTelemetry vers le collector :
 
 ```bash
-make infra                                              # ClickHouse, collector, Grafana
+docker compose up -d clickhouse otel-collector grafana   # le socle, sans l’agent de démo
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 ```
 
